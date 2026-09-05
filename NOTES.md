@@ -533,3 +533,41 @@ While making this change an edit deleted the `client` property from the wrapper 
 67 tests still passed**; the mistake surfaced part-way through a live run. `tests/
 test_nlm_surface.py` now guards the wrapper's public surface, the `text/plain` constant,
 and the rule that only the error status is terminal — offline, in milliseconds.
+
+## We do not fork `notebooklm-mcp-cli`
+
+Worth stating plainly, because two of the changes look like they might be patches:
+uploading a plain `.txt` that the CLI cannot express, and renewing a session without a
+browser window. **Neither modifies the package.** Verified: all 108 installed `.py` files
+share a single modification timestamp — the pip install — so nothing has been edited, and
+`requirements.lock` pins the published release.
+
+What we do instead is call the library API directly rather than going through its `nlm`
+CLI. Both capabilities were already there and simply not exposed:
+
+| What we need | Library | CLI |
+|---|---|---|
+| register a Drive `.txt` as `text/plain` | `add_drive_source(..., mime_type=...)`, free-form | `--type` maps to four values, none plain text |
+| renew a session with no window | `run_headless_auth()`, used by its own recovery | `nlm login` opens a visible Chrome |
+
+**The risk this carries.** Some of what we import is not a documented stable interface:
+`cli.utils.get_client`, `utils.auth_browser.run_headless_auth`, and the status constants on
+`core.client`. A version bump could rename or remove any of it.
+`tests/test_library_contract.py` asserts every one of them offline — imports, signatures,
+the `mime_type` parameter, the conversation controls, and that the status constants still
+mean what we branch on. An upgrade that breaks the assumption fails there in milliseconds
+instead of part-way through a live run.
+
+One of those tests is deliberately phrased as a reason rather than a fact: it asserts the
+CLI's `DRIVE_MIME_TYPES` still has no plain-text entry. If a future release adds one,
+driving the CLI becomes viable again and the workaround should be reconsidered rather than
+the test quietly deleted.
+
+### The test suite was running against the wrong interpreter
+
+Adding those tests exposed it: the suite had been run with the system Python, where
+`notebooklm_tools` is not installed. Two error-path tests passed only because an *import
+failure* produced the error they expected. Under the venv, `status` on a missing notebook
+correctly succeeds and both tests failed. They now provoke a genuine offline failure (an
+empty local folder) instead. **Run the suite with `.venv\Scripts\python.exe`** — the
+system interpreter cannot exercise anything that touches the library.

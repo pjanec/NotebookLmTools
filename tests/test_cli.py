@@ -27,8 +27,11 @@ def test_json_output_is_the_only_thing_on_stdout(tmp_path, capsys):
     assert parsed["counts"]["files"] == 2
 
 
-def test_failure_still_emits_a_complete_envelope(capsys):
-    code = cli.main(["status", "--notebook", "X", "--json"])
+def test_failure_still_emits_a_complete_envelope(tmp_path, capsys):
+    # An empty folder: load fails before any network call, whatever the environment.
+    # (An earlier version used `status`, which only "failed" because notebooklm_tools was
+    # missing from the interpreter running the tests -- passing for the wrong reason.)
+    code = cli.main(["load", "--notebook", "X", "--local-folder", str(tmp_path), "--json"])
     captured = capsys.readouterr()
     assert code != exits.OK
     parsed = json.loads(captured.out)
@@ -39,9 +42,9 @@ def test_failure_still_emits_a_complete_envelope(capsys):
         assert field in parsed["error"]
 
 
-def test_every_error_carries_a_hint(capsys):
+def test_every_error_carries_a_hint(tmp_path, capsys):
     """A caller who never read the docs must still learn what to do."""
-    cli.main(["status", "--notebook", "X", "--json"])
+    cli.main(["load", "--notebook", "X", "--local-folder", str(tmp_path), "--json"])
     parsed = json.loads(capsys.readouterr().out)
     assert parsed["error"]["hint"].strip()
 
