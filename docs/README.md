@@ -6,6 +6,8 @@ Two documents, with different standing. Do not confuse them.
 |---|---|---|
 | `requirements-original-brief.md` | **Frozen.** As received, never edited. | The original statement of intent. Historical. |
 | `design.md` | **Living.** Kept in sync with the implementation. | **Authoritative.** Where it differs from the brief, it wins. |
+| `google-oauth-setup.md` | Procedure. | The one-time Google Cloud step, written from an actual run through the console. |
+| `ask-the-architect-guide.md` | Operator-authored. | Drop-in guidance for a consuming project's `CLAUDE.md`: how an AI agent should consult the notebook, and why it must verify every claim against the code. |
 
 `requirements-original-brief.md` is the brief the operator handed over at the start. It is
 kept verbatim so the reasoning behind the non-negotiables — above all *why* a `.txt` must

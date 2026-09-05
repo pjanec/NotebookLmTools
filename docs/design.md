@@ -1,7 +1,11 @@
 # NotebookLM Tools — Design
 
-**Status:** living specification. Authoritative. Supersedes
-`requirements-original-brief.md` wherever the two differ (see §11).
+**Status:** living specification, kept in step with the implementation. Authoritative.
+Supersedes `requirements-original-brief.md` wherever the two differ (see §11).
+
+**Implemented and exercised against a real 45 MB corpus:** `load`, `status`, `ask`,
+`delete`, `sweep`, `prune`, `doctor`, `gen-fixtures`. Measurements quoted throughout are
+from those runs, not estimates; `NOTES.md` carries the raw findings.
 
 **Target host:** Windows 11, always-on, single operator, single Google account.
 Must be reproducible on a different Windows machine by running the setup script.
@@ -35,25 +39,30 @@ The operator does this by hand today and it works. The tools reproduce it mechan
 
 ### 1.2 No format conversion, ever
 
-Files are stored on Drive as **plain `text/plain`**, byte-for-byte identical to the local
-file, BOM preserved where present. They are **not** converted to native Google Docs.
+Files are stored on Drive as **plain `text/plain`, byte-for-byte identical to the local
+file**, BOM included, and registered with that same mime type. They are **never** converted
+to native Google Docs.
 
-This overturns §4.2 of the original brief, which specified conversion to
-`application/vnd.google-apps.document`. That was wrong for this workflow: a Doc conversion
-cannot preserve a BOM, caps at ~1.02M characters (the real chunks are ~1 MB each, right on
-that ceiling), and would reintroduce exactly the class of silent corruption that fact 1
-exists to prevent. The operator's manual process never converted; neither does this.
+This was measured rather than assumed, and both halves matter:
 
-Consequence: fidelity verification is a **checksum comparison**, not a semantic diff. If
-the MD5 of the remote file matches the local file, the content is provably intact.
+| Route | Result |
+|---|---|
+| plain `.txt` on Drive, registered as `text/plain` | ready in ~13s; ingested text **exactly 100.0%** of the local file, at 1 MB |
+| the same content converted to a Google Doc | **failed to import at all** at 1 MB; at 500 KB it imported but reflowed to 137% of the original |
 
----
+The mime type is the load-bearing detail. Registering a plain `.txt` while *claiming* it is
+a Google Doc — which is all the `nlm` CLI can express — produces a source that appears in
+the listing but never resolves, keeping the raw Drive file id as its title and holding
+`status: 3` forever. That is why §4.2 drives the library directly.
+
+Consequence: fidelity is verifiable rather than hoped for. The bytes on Drive are checksum
+-matched to the local file, and what NotebookLM ingested is compared against it (§6.5).
 
 ## 2. Scope
 
 **In:** upload a local `.txt` bundle to Drive; load it into a named notebook as Drive
-sources; wait for indexing; ask long questions via a temporary question source; prune old
-Drive bundles; generate test fixtures.
+sources; wait for indexing; verify what was ingested; ask long questions, with attached
+data files where needed; prune old Drive bundles; generate test fixtures.
 
 **Out:** web UI, daemon or watcher, Studio artifacts, multi-user support, any network
 listener, chunk generation from real source code (an upstream concern).
@@ -108,20 +117,31 @@ Scope: `drive.file` — rclone may only touch files it created. Sufficient becau
 creates and owns its folders (§6.1), and it means the token cannot read the rest of the
 operator's Drive.
 
-### 4.2 NotebookLM — nlm
+### 4.2 NotebookLM — the `notebooklm_tools` library
 
-`notebooklm-mcp-cli` (the `nlm` CLI and `notebooklm-mcp` MCP server) drives Google's
-**internal**, undocumented NotebookLM endpoints using browser cookies.
+NotebookLM is driven through **`notebooklm_tools` as a Python library, not through the
+`nlm` CLI**. The CLI cannot express the one thing this project depends on: its `--type`
+accepts only `doc|slides|sheets|pdf` (`services/sources.py: DRIVE_MIME_TYPES`), with no
+plain-text option, so a `.txt` on Drive is announced as a Google Doc and never resolves.
+The library's `add_drive_source` takes a free-form `mime_type`, and `text/plain` is what
+makes the whole pipeline work.
 
-```
-nlm login            # browser login; extracts cookies, saves a persistent profile
-nlm login --check
-nlm doctor
-```
+Driving the library also gives real exceptions instead of parsed subprocess output, and
+lets failures map onto this project's exit codes (§4.4).
 
-Cookies last roughly 2-4 weeks and auto-refresh from the saved profile; a fully expired
-Google session needs an interactive `nlm login`. That profile is managed by `nlm` itself,
-lives in its own directory outside the repo, and is gitignored.
+Authentication still belongs to `nlm`: it holds cookies in its own Chrome profile under
+`~/.notebooklm-mcp-cli/`, outside the repository.
+
+**Sessions are short, and renewal is automatic.** Measured, a session lasts hours rather
+than the weeks the original brief assumed. But `nlm login` on an expired session completes
+**without a human**: it re-extracts cookies from its own still-signed-in Chrome profile,
+which outlives the NotebookLM cookies it issues. So any call failing with `NLM_AUTH`
+triggers one `nlm login`, rebuilds the client and retries.
+
+That recovery is bounded at 90 seconds and attempted once per process. If the browser
+profile's own Google session has *also* lapsed, `nlm login` waits interactively for a
+human and would otherwise hang an unattended run for its full five-minute timeout; the
+bound turns that into a clean exit 11 instead.
 
 ### 4.3 Secret storage
 
@@ -210,10 +230,15 @@ argument. **Precedence: command line > config file > built-in default.**
 | `--dry-run` | report the plan; change nothing |
 | `--ready-timeout S` | readiness ceiling (default 1200) |
 | `--poll-interval S` | readiness poll period (default 15) |
+| `--concurrency N` | parallel uploads and source registrations (default 8) |
+| `--verify-ingest MODE` | read back and compare: `sample` (default), `all`, `none` (§6.5) |
 | `--smoke-question Q` / `--smoke-expect S` | fallback readiness probe (§7.2) |
 | `--question TEXT` / `--question-file PATH` | (`ask`) the question body; stdin if neither is given |
 | `--attach FILE` | (`ask`) repeatable; a text-like data file the question refers to (§8.2) |
-| `--keep` | (`ask`) do not delete the question and attachment sources |
+| `--fresh` | (`ask`) start a new conversation instead of continuing (§8.5) |
+| `--conversation ID` | (`ask`) continue one specific thread (§8.5) |
+| `--keep` | (`ask`) do not delete the ask's sources; reports the mask to remove them |
+| `--keep-last N` | (`prune`) how many recent bundles to keep |
 | `--log-level LEVEL` | stderr verbosity |
 
 ### 5.3 Output contract
@@ -337,18 +362,26 @@ Deletion is low-stakes by construction: corpus sources are always restorable by 
  1. parse and validate arguments                       -> exit 19 on bad usage
  2. acquire the notebook lock                          -> exit 17 if genuinely held
  3. select files: mask, *.txt, non-recursive, no Q-    -> exit 18 if empty
- 4. create a fresh Drive bundle folder                 (§6.1)
- 5. rclone copy the selected files into it             -> exit 10 on auth failure
- 6. rclone check --checksum against the local folder   -> exit 13 on any mismatch
- 7. resolve the uploaded files' Drive IDs
- 8. resolve the notebook by title; create if absent    -> exit 14 on duplicates (§6.2)
- 9. delete existing sources matching the masks         (§6.3)
-10. add every uploaded file as a Drive source          (§6.4)
-11. enumerate; assert one source per file              -> exit 15 on any difference
-12. wait for indexing                                  -> exit 16 on timeout (§7)
-13. verify the ingested text against the local files    -> exit 13 on damage (§6.5)
-14. release the lock; emit the envelope
+ 4. upload to a fresh Drive bundle folder, in parallel -> exit 10 on auth failure
+ 5. rclone check --checksum against the local folder   -> exit 13 on any mismatch
+ 6. resolve the uploaded files' Drive IDs
+ 7. resolve the notebook by title; create if absent    -> exit 14 on duplicates (§6.2)
+ 8. delete existing sources matching the masks         (§6.3)
+ 9. register every uploaded file as a source, in parallel  (§6.4)
+10. wait for indexing                                  -> exit 16 on timeout (§7)
+11. verify what was ingested against the local files   -> exit 13 on damage (§6.5)
+12. release the lock; emit the envelope
 ```
+
+**Each stage completes before the next begins**, and the independent work inside a stage
+runs concurrently: one `rclone copy` with `--transfers` moves the whole set at once, then
+source registration, deletion and read-back verification each fan out to `--concurrency`
+(default 8). Doing this a file at a time dominated the run — the transfers were never the
+bottleneck, the per-file server-side calls were. NotebookLM indexes the batch in parallel
+regardless.
+
+Measured on a real 25 MB bundle of 10 files: **1m40s end to end**, every file verified
+intact.
 
 Steps 4-6 complete before step 9 touches the notebook: nothing is deleted until the new
 content is on Drive and provably intact. This differs from the brief, which deleted first;
@@ -392,183 +425,214 @@ real titles in M4 before this step is trusted.
 ### 6.4 Add sources
 
 ```
-source_add(notebook_id, source_type="drive", document_id=<drive file id>, ...)
+add_drive_source(notebook_id, drive_file_id, title, mime_type="text/plain")
 ```
 
-Never a local file upload (§1.1). Reconnaissance settled the multi-add question: in `nlm`
-0.10.1, `--url` and `--youtube` are repeatable for bulk but `--drive` takes a single
-document ID, so the batch is added by looping, one call per file.
+The mime type is the point (§1.2). Never a Google Docs type, and never a local file upload
+(§1.1).
+
+`--drive` takes a single document id — `--url` and `--youtube` are the repeatable ones — so
+the batch is added one call per file. Those calls are independent and each costs several
+seconds server-side, so they run **concurrently** (`--concurrency`, default 8). Registering
+20 files one at a time dominated the whole run; NotebookLM indexes the batch in parallel
+regardless.
+
+**A Drive source's title is not ours to choose.** NotebookLM names it after the Drive file
+and ignores the title argument — true only for *text* sources, which do honour it. So
+anything the title must carry has to be part of the Drive filename, which is why an ask's
+attachments are uploaded as `Q<n>-a<i>-<original-name>.txt` (§8.2). For the corpus this is
+free: those files keep their own names, so a source's title equals the local filename,
+which is what the masks already assume.
 
 ### 6.5 Verify the ingested text
 
-`nlm source content <source-id>` returns a source's raw text **as NotebookLM ingested it**.
-That is a direct measurement of the property §1.1 exists to protect, so `load` uses it:
-pull the ingested text back and compare it against the local file. Damage is exit 13, and
-the run says which file and where they diverged.
+`get_source_fulltext` returns a source's text **as NotebookLM ingested it**, which is a
+direct measurement of the property §1.1 exists to protect. After indexing, `load` pulls it
+back and compares it against the local file.
 
-**One file, not all of them.** `--verify-ingest` takes `sample` (the default), `all`, or
-`none`. The failure this guards against is **systemic, not per-file**: NotebookLM either
-strips function bodies from this kind of source or it does not. One sampled file detects
-that for about a twentieth of the cost, on a real bundle of ~20 MB where downloading
-everything back would roughly double the run's network traffic for no extra information.
+**Identifier coverage, not exact equality.** The check compares identifier-like tokens
+(`[A-Za-z_][A-Za-z0-9_]{2,}`) and requires 99.5% of the local file's tokens to be present.
+An exact comparison was tried first and reported damage on two real files, both false
+alarms:
 
-`all` exists for the paranoid case and for a first run against an unfamiliar corpus.
-`none` skips the check entirely — reasonable once the route is well proven, but it is not
-the default, because the whole point of §1.1 is that this failure is silent.
+* One dump contained an **embedded TrueType font** — NUL bytes, 659 undecodable sequences.
+  NotebookLM stripped the unprintable bytes, so 256,121 characters "vanished" and not one
+  of them was source code.
+* Another file was not valid UTF-8 in one place. NotebookLM decoded those bytes as cp1252
+  and we decoded them as UTF-8, so identical content compared unequal.
 
-This is stronger than the smoke question the design originally relied on. A smoke query
-*infers* that function bodies survived from the fact that an answer was correct; this
-*observes* it. The smoke query remains as the readiness fallback (§7.2), not as the
-fidelity evidence.
+Tokens ignore both artefacts while still catching what matters: stripping a function body
+removes the identifiers inside it, which shows up immediately. On a real 25 MB bundle the
+check reports 100.000% for every file.
 
-Comparison is on normalised text, not bytes: the ingested form is what the model reads, so
-line-ending and trailing-whitespace differences are noise, while a missing function body is
-exactly what must be caught. The check therefore compares non-whitespace content, and
-reports the first divergence with enough context to see what was lost.
-
----
+**How much to check.** `--verify-ingest` takes `sample` (the default, one file), `all`, or
+`none`. The failure this guards against is systemic — NotebookLM either strips this kind of
+source or it does not — so one sampled file detects it, where reading back a 25 MB bundle
+would roughly double the run's network traffic for no extra information. `all` is worth it
+on a first run against an unfamiliar corpus. Damage is exit 13, and the report names the
+file and how much is missing.
 
 ## 7. Readiness
 
-Two possible signals, in order of preference.
+Indexing takes time, and a notebook queried too early answers from an incomplete corpus
+without saying so. Every load waits for its sources before returning.
 
-### 7.1 Per-source status (preferred)
+### 7.1 Per-source status
 
-If enumeration exposes a processing state — the data behind the web UI's spinner — poll
-until every source in the batch reports ready. Poll every `--poll-interval` (default 15s),
-ceiling `--ready-timeout` (default 20 min), then exit 16.
+Enumeration exposes a status, and the client defines what the values mean:
+
+| Value | Meaning |
+|---|---|
+| 1 | processing |
+| 2 | ready |
+| 3 | error |
+| 5 | preparing |
+
+**Only `3` is terminal.** `1` and `5` are transient, and a source sat at `preparing` for
+over a minute during testing before becoming `ready` — an early version read that as
+failure and produced a false negative. Poll every `--poll-interval` (default 15s) until
+every source in the batch reports ready; give up after `--ready-timeout` (default 20
+minutes) with exit 16, and report which sources were still pending and in what state.
 
 ### 7.2 Smoke query (fallback)
 
-If no status field exists, run `--smoke-question` and check the answer contains
-`--smoke-expect`. The question must be answerable only from **inside a function body**, so
-that it re-verifies §1.1's core property on every load. Back off 30s / 60s / 120s / 240s,
-then exit 16.
-
-Either way, log the observed indexing time per run in `NOTES.md`. `ask` refuses to run
-while the notebook's lock is held.
-
----
+The per-source status is available, so this is not needed in practice. It remains
+specified for the case where a future version stops exposing status: run
+`--smoke-question` and check the answer contains `--smoke-expect`, backing off 30s / 60s /
+120s / 240s, then exit 16. A good smoke question is answerable only from **inside a
+function body**, so that it re-verifies §1.1's property as a side effect.
 
 ## 8. Long questions — `nlmt ask`
 
-A long question is often more than text: it references **attached data files** — a JSON
-export, a CSV, a log extract — that the question asks about. Both the question and its
-attachments are temporary sources, created for one query and removed afterwards.
+A long question is often more than text: it references attached data files — a JSON export,
+a CSV, a log extract — that the question asks about.
 
 ```
- 1. acquire the notebook lock (not merely check it)
- 2. n = next free ask ordinal for this notebook                 (§8.2)
- 3. for each --attach FILE, i = 1..k:                           (§8.2)
-      upload to /NotebookLmTools/<project>/_ask/Q<n>/<name>.txt
-      verify by checksum                                        -> exit 13 on mismatch
-      source_add(nb, source_type="drive", document_id=<id>,
-                 title="Q<n>-a<i>-<name>.txt")                  -> attachment source
- 4. source_add(nb, source_type="text", title="Q<n>-q-<slug>",
-               text=<long question body>)                       -> question source
- 5. wait for every source created in 3 and 4 to finish indexing (§7)  -> exit 16
- 6. notebook_query(nb, <generated prompt>)                       (§8.3)
- 7. save the answer
- 8. delete every source created in 3 and 4, and the _ask/Q<n>/
-    Drive folder                                     # in a finally block
+ 1. acquire the notebook lock (take it, do not merely check it)
+ 2. clear any stranded Q<n>- source from a killed run          (§8.1)
+ 3. n = next free ask ordinal for this notebook
+ 4. for each --attach FILE, i = 1..k:                          (§8.2)
+      upload to /NotebookLmTools/<project>/_ask/Q<n>/Q<n>-a<i>-<name>.txt
+      verify by checksum                                       -> exit 13 on mismatch
+      register as a source (text/plain)
+ 5. if the question fits inline: send it in the prompt         (§8.3)
+    otherwise: add it as a source Q<n>-q-<slug> and wait for indexing
+ 6. query, with the generated prompt                           (§8.4)
+ 7. save the answer under answers/
+ 8. delete everything created, and the _ask/Q<n>/ Drive folder  # in a finally block
  9. release the lock
 ```
 
-### 8.1 The question text bypasses Drive; attachments do not
+### 8.1 A stranded ask source hijacks answers
 
-The **question body** is added directly as `source_type="text"`. That is correct and *not*
-a violation of §1.1: the rule there forbids `source_type="file"`, a **local file upload**,
-because NotebookLM's file ingestion strips function bodies out of source code. A question
-is prose instructions, has no bodies to lose, and is deleted minutes later. Routing it
-through Drive would buy a round-trip and a stray Drive file for nothing.
+An abandoned `Q<n>-` source is not litter, it is a correctness bug. A question source is
+instruction-shaped text sitting in the corpus, so NotebookLM retrieves it and answers
+**about it** rather than about the question asked. Measured, same notebook, same
+conversation, one variable: a query asking only for the word MANGO returned a description
+of a leftover source, and returned `MANGO` the moment that source was deleted.
 
-**Attachments are different and go through Drive, exactly like the corpus.** An attached
-JSON or CSV is *data whose exact content is the point of the question* — a dropped array
-element or a truncated field produces a confidently wrong answer, which is the same silent
-failure mode §1.1 exists to prevent. Attachments therefore take the proven path: Drive,
-plain text, checksum-verified, added as `source_type="drive"`. The cost is one upload and
-one delete; the alternative is trusting an unverified ingestion path with the data the
-answer depends on.
+Cleanup in `finally` cannot cover the case that actually produces strays — a killed
+process, where `finally` never runs. So `ask` **also clears them before asking**. It holds
+the notebook lock, so no legitimate ask can be in flight and anything found is by
+definition abandoned. The envelope reports `counts.orphans_cleared`; a non-zero value means
+an earlier run was interrupted.
 
-### 8.2 Extension and naming
+### 8.2 Attachments go through Drive
 
-NotebookLM will not accept arbitrary file types, so an attachment is uploaded with `.txt`
-appended to its **full original filename** — `config.json` becomes `config.json.txt`. The
-bytes are unchanged; only the name gains a suffix. Keeping the original name visible
-matters, because the question body refers to the file by the name the operator or agent
-knows it by.
+The **question** is prose with no code bodies to lose. An **attached JSON or CSV is the
+data the answer depends on**, where a dropped element or truncated field produces a
+confidently wrong answer — the same silent failure §1.1 exists to prevent. So attachments
+take the proven path: Drive, plain text, checksum-verified, registered as `text/plain`.
 
-Every source belonging to one ask shares a short **ordinal prefix** `Q<n>-` (§3.7):
+Attachments must be text-like; a file with NUL bytes in its first 8 KB is refused (exit 19)
+rather than ingested as mojibake.
+
+**Naming.** An attachment is uploaded as `Q<n>-a<i>-<original-name>.txt`:
+
+* `.txt` because NotebookLM refuses other types.
+* The `Q<n>-` prefix **on the Drive filename**, because a Drive source's title is not ours
+  to set — NotebookLM names it after the file (§6.4). Getting this wrong once produced a
+  source called `metrics.json.txt` with no prefix: invisible to `sweep` and to
+  `delete --mask Q7-`, stranded in the corpus, and quietly poisoning later answers.
+* The original name preserved, because §8.4's prompt maps it back to what the question
+  calls it.
+
+So every source of one ask shares the prefix, and the whole ask is one mask:
 
 ```
-Q7-q-locking-review        the question body
+Q7-q-locking-review        the question body, when it is sent as a source
 Q7-a1-config.json.txt      first attachment
 Q7-a2-metrics.csv.txt      second attachment
 ```
 
-The point of the ordinal is that **`Q7-` is a mask**, so the whole ask is removable with the
-same delete-by-mask primitive everything else uses — `nlmt delete --mask Q7-` (§5.6) —
-without the operator having to look anything up or type a timestamp from a phone.
+`nlmt delete --mask Q7-` removes exactly that ask. The ordinal is one greater than the
+highest already present, derived from a listing rather than persisted (principle 3.3), and
+the notebook lock makes read-then-allocate safe. Ordinals are reused after deletion; the
+durable record is the transcript under `answers/`, whose filename carries the timestamp.
 
-The `q-` and `a<i>-` markers say at a glance what each source is, and keep an attachment
-that happens to be named `question.txt` from colliding with the question body. The
-attachment keeps its original filename after that marker, because §8.3 has to map it back
-to the name the question body uses.
+### 8.3 The question is sent inline
 
-**Allocating the ordinal.** `n` is one greater than the highest ordinal already present
-among the notebook's `^Q\d+-` sources, or 1 if there are none. It is derived from a
-listing, so it keeps principle 3.3 — no persisted state — and the notebook lock makes the
-read-then-allocate safe. Ordinals are reused after an ask is deleted; that is harmless,
-because the durable record of an ask is its transcript in `answers/`, whose filename
-carries the full timestamp.
+The question travels **in the prompt**, not as a source. Measured against the live API: a
+payload of 8,403 characters was accepted and echoed back intact, while 12,352 was rejected
+with `INVALID_ARGUMENT`, so the ceiling is near 10,000. `INLINE_LIMIT` is 8,000, leaving
+room for the prompt scaffolding.
 
-Attachments must be text-like (JSON, CSV, log, plain text). A binary file is refused with
-exit 19 and a hint; embedding binaries is out of scope.
+This removes a source creation, an indexing wait and a deletion — and, worth more, removes
+the thing that gets stranded and hijacks later answers (§8.1). A plain question then creates
+nothing at all in the notebook.
 
-### 8.3 The generated prompt
+Two fallbacks to the question-as-source route, which remains fully supported:
 
-The query prompt is generated, not written by the caller, and must **bridge the naming
-gap**: the question body refers to `config.json`, while the notebook knows a source titled
-`Q7-a1-config.json.txt`. Without an explicit mapping the model cannot reliably
-connect the two.
+* the question is longer than `INLINE_LIMIT`;
+* the API rejects the query anyway. Rejection is distinct and fast — about two seconds —
+  so a misjudged threshold costs seconds rather than the run.
+
+The envelope reports `question_inline` either way.
+
+### 8.4 The generated prompt
+
+The prompt must **bridge the naming gap**: the question refers to `config.json`, while the
+notebook knows a source titled `Q7-a1-config.json.txt`. Without an explicit mapping the
+model cannot connect them.
 
 ```
-Answer the question in source "Q7-q-locking-review".
-The data it refers to is attached as these sources:
+<the question body, inline>
+
+The data referred to above is attached as these sources:
   config.json   -> source "Q7-a1-config.json.txt"
   metrics.csv   -> source "Q7-a2-metrics.csv.txt"
+
 Use the other sources in this notebook as evidence.
 ```
 
-### 8.4 Notes
+When the question was too long to inline, the first line becomes
+`Answer the question in source "Q7-q-<slug>".` instead.
 
-- Step 1 **takes** the lock; the brief only had `ask` refuse when one was held, which would
-  let a concurrent `load` delete the corpus out from under a running question.
-- Step 5 is a full readiness wait (§7), not merely `wait=True` on the add. Attachments are
-  real sources and must finish indexing before the query, for the same reason a batch must.
-- The question body comes from `--question TEXT`, `--question-file PATH`, or stdin.
-  `--attach FILE` is repeatable.
-- Attachments count against the notebook's source limit while the ask is in flight.
-- Step 8 is in `finally`, and cleans up **both** the notebook sources and the `_ask` Drive
-  folder. An abandoned question or attachment source pollutes retrieval for every later
-  answer in that notebook. `--keep` skips it when debugging — and because the ask is a
-  single mask, cleaning up afterwards is just `nlmt delete --mask Q7-`. `nlmt sweep` is the
-  blunt version: every `Q<n>-` source and every leftover `_ask/*` Drive folder.
-- The envelope reports the allocated ordinal as `ask: "Q7"`, so a caller that used `--keep`
-  knows the mask to delete later without having to enumerate sources.
-- Default query budget 120s wall-clock. For heavy questions over a 20-source corpus, use
-  `notebook_query_start` + poll `notebook_query_status` rather than raising the sync
-  timeout.
+### 8.5 Conversations
+
+A query **continues the notebook's existing conversation by default**, and that is
+deliberate: the architect answers better warmed up, so a caller can ask how something works
+and then ask the real question with that context in play. The envelope returns
+`conversation_id`, `--conversation ID` continues a specific thread, and `--fresh` starts a
+clean one for a question that must stand alone.
+
+### 8.6 Notes
+
+- The lock is **taken**, not merely checked: otherwise a concurrent `load` could delete the
+  corpus out from under a running question.
+- Cleanup runs in `finally` and deletes **by the `Q<n>-` mask**, not by the ids it happens
+  to hold. A source can exist server-side while the call that created it reported failure,
+  and deleting by id alone would strand exactly that source.
+- `--keep` skips cleanup and reports `cleanup_mask`, so the ask can be removed later with
+  `nlmt delete --mask Q<n>-`. `nlmt sweep` is the blunt version.
 - Answers are written to `answers/<notebook-slug>/<timestamp>-Q<n>-<slug>.md` with the
-  question body, the list of attachments, the answer, and the live source list at the time
-  of asking. The timestamp is what makes the record durable, since ordinals get reused.
-  `answers/` is gitignored — transcripts contain source excerpts.
-- Question and attachment sources live in the same notebook as the corpus; a separate
-  notebook cannot see the corpus, so the question could not be answered there.
+  question, the attachment list, the answer, and the live source list at the time of
+  asking. `answers/` is gitignored — transcripts contain source excerpts.
+- **Cost.** Measured against a 45 MB notebook: a plain question takes about two minutes, a
+  question with one attachment about four. The cost is the query itself, not the tooling.
 - **Chat history caveat:** reloading a bundle breaks citations in older chat sessions that
-  pointed at now-deleted sources. Expected, not a bug. Documented in `README.md`.
+  pointed at the sources it replaced. Expected, not a bug.
 
----
 
 ## 9. Test fixtures — `nlmt gen-fixtures`
 
@@ -603,11 +667,23 @@ NotebookLmTools/
     requirements-original-brief.md   # frozen
     design.md             # this file
   src/nlmtools/
-    common/               # args, config merge, envelope, exit codes, locking, secrets, logging
-    loader/               # select, drive (rclone wrapper), notebook, readiness
-    ask/                  # long-question protocol
-    fixtures/             # synthetic bundle generator
-    cli.py                # dispatcher
+    common/
+      spec.py             # the single definition of the CLI; help is generated from it
+      exits.py            # exit codes, and the error type that carries a hint
+      envelope.py         # the output contract
+      nlm.py              # NotebookLM via the notebooklm_tools library, with auto re-login
+      secrets.py          # Windows Credential Manager access
+      process.py          # child processes, with secrets scrubbed from logs
+      locking.py          # per-notebook locks with stale reclaim
+      naming.py           # slugs, the Q<n>- reservation, ask titles
+      topics.py           # concept help, including the agent guide
+    loader/
+      select.py           # masks -> file list; pure, unit-testable
+      drive.py            # rclone: bundles, parallel upload, checksum verification
+      load.py             # the load pipeline
+    ask/ask.py            # the long-question protocol
+    fixtures/generate.py  # synthetic bundle generator
+    cli.py                # dispatcher, help rendering, --ai
   tools/                  # pinned rclone.exe, fetched by setup
   tests/
   answers/                # gitignored
@@ -666,31 +742,39 @@ Locks are per notebook, so different notebooks can be loaded in parallel.
 | M5 asserts a preserved Drive file ID | dropped | meaningless under folder-per-bundle |
 | M1 uses three real chunks | synthetic generator with a ground-truth manifest | no real data available yet |
 | §2 `uv tool install` | install into the project venv | self-contained and transferable |
+| §0.2 drive NotebookLM through the `nlm` CLI | drive the `notebooklm_tools` library | the CLI's four-value `--type` cannot express `text/plain`, which the pipeline depends on (§4.2) |
+| §6 the question is always a source | the question is sent inline, with the source route as fallback | measured ~10,000-character ceiling; inline removes an indexing wait and the stranded-source failure (§8.3) |
+| §0.3.8 `Q-` is a plain prefix | `Q<n>-` carried on the **Drive filename** | a Drive source's title is set by the file, not by us (§6.4) |
+| — | `ask` clears stranded ask sources before asking | `finally` cannot run after a kill, and a stray hijacks later answers (§8.1) |
+| — | automatic re-authentication on `NLM_AUTH` | sessions last hours, and `nlm login` renews them without a human (§4.2) |
+| §4 exact-text fidelity comparison | identifier-coverage comparison at 99.5% | exact matching cried wolf on embedded binary and on non-UTF-8 bytes (§6.5) |
+| §4 one file at a time | parallel upload and registration | per-file server-side calls, not transfers, dominated the run (§6) |
 
 ---
 
-## 12. Open reconnaissance items
+## 12. Reconnaissance — answered
 
-To be answered against the **installed** `nlm` before §6 and §7 are finalised, and recorded
-in `NOTES.md`. Where the installed tool contradicts this document, the tool wins.
+Settled against `nlm` / `notebooklm_tools` 0.10.1 on 2026-09-05. Detail in `NOTES.md`.
 
-Answered against `nlm` 0.10.1 on 2026-09-05; full detail in `NOTES.md`.
+1. **Multiple document ids in one call?** No. `--drive` takes one id; `--url` and
+   `--youtube` are the repeatable ones. `load` registers sources concurrently instead
+   (§6.4).
+2. **Index status exposed?** Yes — `1` processing, `2` ready, `3` error, `5` preparing.
+   Only `3` is terminal (§7.1).
+3. **Does a plain `.txt` on Drive work?** **Yes, and only with `mime_type="text/plain"`.**
+   This is the fact the whole pipeline rests on: the CLI's four-value type enum cannot
+   express it, which is why the library is driven directly (§1.2, §4.2).
+4. **What is a source's title derived from?** For a **Drive** source, the Drive filename —
+   the title argument is ignored. For a **text** source, the title given. This asymmetry
+   is why an attachment carries its prefix in the Drive filename (§6.4, §8.2).
+5. **Is enumeration paginated?** Not observed at 18 sources. Unresolved above that.
+6. **Which version?** `notebooklm-mcp-cli` 0.10.1.
 
-1. ~~Multiple document IDs in one call?~~ **No.** `--drive` takes one ID, so `load` loops.
-2. ~~Index status exposed?~~ **Partly:** `source add --wait` blocks until processing
-   completes. Whether enumeration also carries a state field is still open.
-3. **Does `--drive` accept a plain `.txt` Drive file? Still open, and the one risk that
-   matters.** `--type` offers only `doc, slides, sheets, pdf` — no plain-text type. The
-   operator's manual workflow proves the *web picker* accepts a `.txt` from Drive, but
-   that is not the same code path. This is the load-bearing assumption of §1.2 and the
-   first thing M3/M4 must settle; nothing else should be built on top of it. §6.5 is the
-   defence against the dangerous outcome, where the file is accepted but ingested lossily.
-4. ~~What is a title derived from?~~ **We set it:** `source add --title` takes the title
-   directly, so §6.3's matcher is safe.
-5. Is enumeration **paginated**? Not documented as such; confirm live and page it if so.
-6. ~~Which `nlm` version?~~ **0.10.1.**
+Two limits worth recording alongside them:
 
----
+* **Inline query ceiling ~10,000 characters.** 8,403 accepted, 12,352 rejected with
+  `INVALID_ARGUMENT` in about two seconds (§8.3).
+* **Session lifetime is hours, not weeks**, and renewal is automatic (§4.2).
 
 ## 13. Milestones
 
