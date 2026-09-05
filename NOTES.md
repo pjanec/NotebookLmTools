@@ -252,3 +252,21 @@ Measured against a 1,002,523-byte plain `.txt` on Drive:
   source stops changing or a timeout expires.
 - Google Docs conversion is now irrelevant: no BOM loss, no 1.02M-character ceiling, and
   no fidelity question, because the bytes are never transformed.
+
+### Querying verified (2026-09-05)
+
+`notebook query` against the probe notebook, asking for a value that exists only inside a
+method body 75% of the way through the 1 MB source:
+
+- Correct answer (**9632**) retrieved from `Big_b17_01.txt`. Deep retrieval from a
+  full-size chunk works, so ingestion is not merely complete but usable.
+- **Citations are structured**: the response carries `sources_used` (source ids) and
+  `citations` (footnote number -> source id). M4's "returns the expected value with a
+  citation" is therefore machine-checkable, not a judgement call.
+- Sources were disambiguated correctly. The fixtures deliberately reuse class and method
+  names across files; the answer listed each value with the file it came from rather than
+  conflating them.
+
+Still untested: the long-question protocol end to end (`ask`), including attachments and
+cleanup. Its parts are proven individually — a text source added inline ingested intact,
+and query returns citations — but the sequence has not been run.
