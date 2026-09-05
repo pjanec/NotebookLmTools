@@ -103,3 +103,33 @@ This is the first thing M3/M4 must establish, and no other work should build on 
 | Date | Bundle | Files | Size | Upload | Indexing | Total |
 |---|---|---|---|---|---|---|
 | | | | | | | |
+
+## 2026-09-05 — rclone's shared Google client id is being retired
+
+`rclone config create <name> drive ...` silently did nothing: no remote, no browser, no
+prompt. Probing with `--non-interactive` showed why. The first question rclone asks is:
+
+> rclone's shared Google Drive client_id is being retired and will stop working during
+> 2026. Create your own to avoid interruption. Continue using the shared client_id
+> anyway?  **Default: false**
+
+`config create` takes the default for any question it is not given an answer to, so it
+answered "no" and aborted — exit code 0, no output, nothing created.
+
+Two consequences.
+
+**Immediate:** every question must be answered explicitly. The remote is now created with
+`config_shared_client_id=true` (or with our own client id, if one is configured), and
+afterwards the script verifies the remote exists *and* can reach Drive with `rclone lsd`.
+An interactive tool reporting success is not evidence that it worked.
+
+**Strategic, and the operator's decision:** the design chose rclone over a self-registered
+OAuth client specifically to avoid Google Cloud console setup (`docs/design.md` §4.1). That
+rationale has an expiry date, and rclone says the date is during 2026 — which is now. The
+options are to keep using the shared client id until it breaks, or to create one Google
+Cloud OAuth client (~10 minutes, once) and pass it via `-DriveClientId` /
+`-DriveClientSecret`, which `setup.ps1` now supports and stores in Credential Manager.
+
+Note the scope analysis is unchanged and still favours our own client if we go that way:
+`drive.file` is non-sensitive, so the app can be published to production without Google
+verification, and its refresh tokens do not expire on the 7-day "Testing" clock.

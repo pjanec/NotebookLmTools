@@ -33,6 +33,15 @@
     Full path to the python.exe to build the virtual environment with. Overrides every
     other candidate. Use it when detection picks the wrong interpreter, or picks none.
 
+.PARAMETER DriveClientId
+    Your own Google OAuth client id for Drive. Optional, but recommended: rclone's shared
+    client id is being retired during 2026, and when it stops working Drive access breaks.
+    Stored in Windows Credential Manager on first use, so it need only be passed once.
+    See https://rclone.org/drive/#making-your-own-client-id
+
+.PARAMETER DriveClientSecret
+    The matching client secret. Stored alongside the client id.
+
 .PARAMETER Force
     Rebuild the virtual environment from scratch.
 
@@ -43,12 +52,18 @@
 .EXAMPLE
     .\setup.ps1 -SkipLogins
     Refresh the Python environment without touching credentials.
+
+.EXAMPLE
+    .\setup.ps1 -DriveClientId 123.apps.googleusercontent.com -DriveClientSecret GOCSPX-xxx
+    Use your own Google OAuth client instead of rclone's shared one.
 #>
 [CmdletBinding()]
 param(
     [switch]$SkipLogins,
     [string]$RcloneVersion,
     [string]$PythonExe,
+    [string]$DriveClientId,
+    [string]$DriveClientSecret,
     [switch]$Force
 )
 
@@ -73,6 +88,8 @@ $LockFile   = Join-Path $Root 'requirements.lock'
 $RemoteName = 'nlmtools'
 $KeyService = 'NotebookLmTools'
 $KeyAccount = 'rclone-config-password'
+$KeyDriveClientId     = 'drive-oauth-client-id'
+$KeyDriveClientSecret = 'drive-oauth-client-secret'
 
 function Write-Step  { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
 function Write-Ok    { param($m) Write-Host "    ok: $m" -ForegroundColor Green }
@@ -507,11 +524,12 @@ function Invoke-VenvPython {
     }
 }
 
-function Get-StoredPassword {
+function Get-StoredValue {
+    param([Parameter(Mandatory)][string]$Account)
     try {
         $result = Invoke-VenvPython -Lines @(
             'import keyring'
-            "value = keyring.get_password('$KeyService', '$KeyAccount')"
+            "value = keyring.get_password('$KeyService', '$Account')"
             'print(value or "")'
         )
     } catch {
@@ -520,21 +538,27 @@ function Get-StoredPassword {
     return $result.Trim()
 }
 
-function Set-StoredPassword {
-    param([string]$Value)
-    # The password goes in on stdin, never as a command-line argument: arguments are
-    # visible to other processes and land in shell history.
+function Set-StoredValue {
+    param(
+        [Parameter(Mandatory)][string]$Account,
+        [Parameter(Mandatory)][string]$Value
+    )
+    # The value goes in on stdin, never as a command-line argument: arguments are visible
+    # to other processes and land in shell history.
     try {
         Invoke-VenvPython -StdIn $Value -Lines @(
             'import sys, keyring'
             'value = sys.stdin.readline().rstrip("\r\n")'
-            "keyring.set_password('$KeyService', '$KeyAccount', value)"
+            "keyring.set_password('$KeyService', '$Account', value)"
         ) | Out-Null
     } catch {
-        Fail "could not store the password in Windows Credential Manager: $_" `
+        Fail "could not store a credential in Windows Credential Manager: $_" `
              'check that the keyring package installed correctly, then re-run'
     }
 }
+
+function Get-StoredPassword { Get-StoredValue $KeyAccount }
+function Set-StoredPassword { param([string]$Value) Set-StoredValue $KeyAccount $Value }
 
 Write-Step 'Configuring Google Drive access'
 if ($SkipLogins) {
@@ -562,17 +586,54 @@ if ($SkipLogins) {
         if ($remotes -contains "${RemoteName}:") {
             Write-Ok "rclone remote '$RemoteName' already configured"
         } else {
+            # Every question rclone would ask must be answered explicitly. `config create`
+            # silently takes the default for anything unanswered, and the default for the
+            # shared-client_id warning is "no" -- which aborts the whole thing without
+            # creating a remote and without opening a browser. That failure looks exactly
+            # like nothing happening.
+            $createArgs = @('config', 'create', $RemoteName, 'drive', 'scope=drive.file')
+
+            $clientId = if ($DriveClientId) { $DriveClientId } else { Get-StoredValue $KeyDriveClientId }
+            $clientSecret = if ($DriveClientSecret) { $DriveClientSecret } else { Get-StoredValue $KeyDriveClientSecret }
+
+            if ($clientId) {
+                if ($DriveClientId)     { Set-StoredValue $KeyDriveClientId $DriveClientId }
+                if ($DriveClientSecret) { Set-StoredValue $KeyDriveClientSecret $DriveClientSecret }
+                $createArgs += "client_id=$clientId"
+                if ($clientSecret) { $createArgs += "client_secret=$clientSecret" }
+                Write-Note 'using your own Google OAuth client id'
+            } else {
+                Write-Warn2 'using rclone''s shared Google client id, which rclone says is'
+                Write-Note  'being retired during 2026. When it stops working, create your own'
+                Write-Note  'and re-run:  .\setup.ps1 -DriveClientId <id> -DriveClientSecret <secret>'
+                Write-Note  'See https://rclone.org/drive/#making-your-own-client-id'
+                $createArgs += 'config_shared_client_id=true'
+            }
+
             Write-Host ''
             Write-Host '    A browser window will open so you can authorize rclone against your' -ForegroundColor Yellow
-            Write-Host '    normal Google account. Nothing is created in Google Cloud, and the' -ForegroundColor Yellow
-            Write-Host '    drive.file scope means rclone can only see files it creates itself.' -ForegroundColor Yellow
+            Write-Host '    normal Google account. Files land in your ordinary personal Drive, and' -ForegroundColor Yellow
+            Write-Host '    the drive.file scope means rclone can only see files it creates itself.' -ForegroundColor Yellow
             Write-Host ''
-            $created = Invoke-NativeInteractive -Exe $RcloneExe -Arguments @('config','create',$RemoteName,'drive','scope','drive.file')
+            $created = Invoke-NativeInteractive -Exe $RcloneExe -Arguments $createArgs
             if (-not $created.Ok) {
                 Fail 'rclone Drive authorization did not complete' `
                      'run: tools\rclone.exe config   and create a "drive" remote named nlmtools with scope drive.file'
             }
-            Write-Ok "authorized Drive remote '$RemoteName'"
+
+            # Never trust that an interactive tool succeeded: verify the remote exists and
+            # can actually reach Drive. rclone exits 0 after declining its own question.
+            $after = Invoke-Native -Exe $RcloneExe -Arguments @('listremotes')
+            if (-not ($after.Ok -and ($after.Lines -contains "${RemoteName}:"))) {
+                Fail "rclone reported success but no '$RemoteName' remote exists" `
+                     'run: tools\rclone.exe config   and create the remote by hand'
+            }
+            $reach = Invoke-Native -Exe $RcloneExe -Arguments @('lsd', "${RemoteName}:", '--max-depth', '1')
+            if (-not $reach.Ok) {
+                Fail "the '$RemoteName' remote exists but cannot reach Drive: $($reach.Output)" `
+                     'delete it with: tools\rclone.exe config delete nlmtools   then re-run this script'
+            }
+            Write-Ok "authorized Drive remote '$RemoteName' and confirmed it reaches Drive"
         }
 
         # Encrypt the config at rest. The command moved between rclone versions, so probe
