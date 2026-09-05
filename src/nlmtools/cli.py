@@ -61,7 +61,14 @@ def _add_arg(parser: argparse.ArgumentParser, arg: spec.Arg) -> None:
 
 
 def _epilog(command: spec.Command) -> str:
-    lines = ["examples:"]
+    lines = []
+    if command.returns:
+        lines.append("returns in the --json envelope:")
+        width = max(len(f) for f, _ in command.returns)
+        for field, meaning in command.returns:
+            lines.append(f"  {field:<{width}}  {meaning}")
+        lines.append("")
+    lines.append("examples:")
     for example, does in command.examples:
         lines.append(f"  {example}")
         lines.append(f"      {does}")
@@ -149,7 +156,7 @@ def ai_reference() -> str:
     )
     out.append("")
 
-    for name in ("workflow", "masks", "asks", "readiness", "output", "secrets"):
+    for name in ("workflow", "agent", "masks", "asks", "readiness", "output", "secrets"):
         out.append("-" * 78)
         out.append(topics.get(name) or "")
     out.append("-" * 78)
@@ -181,6 +188,13 @@ def ai_reference() -> str:
                 bits.append("one of " + "|".join(arg.choices))
             suffix = f"  [{'; '.join(bits)}]" if bits else ""
             out.append(f"  {flags:<22}{arg.help}{suffix}")
+        out.append("")
+        if command.returns:
+            out.append("")
+            out.append("returns in the --json envelope:")
+            width = max(len(f) for f, _ in command.returns)
+            for field, meaning in command.returns:
+                out.append(f"  {field:<{width}}  {meaning}")
         out.append("")
         out.append("examples:")
         for example, does in command.examples:

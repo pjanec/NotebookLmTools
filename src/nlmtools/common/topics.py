@@ -8,6 +8,57 @@ from __future__ import annotations
 from . import exits
 
 TOPICS: dict[str, str] = {
+    "agent": """\
+Driving these tools from an AI agent
+
+Every command takes --json and prints exactly one envelope on stdout, so parse stdout and
+branch on the exit code. Logs go to stderr; never parse them. Each command's own --help
+lists the envelope fields it sets.
+
+REFRESH A NOTEBOOK FROM A LOCAL FOLDER
+
+    nlmt load --notebook "Engine review" --local-folder D:\\exports\\engine --json
+
+  Returns counts.selected / uploaded / verified / deleted / added, and ready:true once
+  indexing has finished. The command does not return until the sources are queryable, so
+  there is nothing to poll afterwards. Exit 0 means the notebook is ready to be asked.
+
+ASK A LONG QUESTION, WITH DATA
+
+    nlmt ask --notebook "Engine review" --question-file q.md --attach metrics.json --json
+
+  The question body can be as long as you like; put it in a file rather than on the
+  command line. Attachments are uploaded, referenced from a generated prompt, and removed
+  again afterwards. The answer is saved at the path in "transcript", and "citations" says
+  how many sources the answer actually leaned on -- an answer citing nothing is a warning
+  sign, not a result.
+
+  Use --keep while debugging, then remove that ask by the mask the envelope hands back:
+
+    nlmt delete --notebook "Engine review" --mask Q7- --json
+
+WHAT TO DO WITH EACH EXIT CODE
+
+  0        continue
+  10, 11   a human must re-authenticate; do not retry in a loop
+  12       quota; wait, then retry once
+  13       STOP. Content did not survive intact. Do not trust answers from this notebook.
+  14       two notebooks share the title; a human must rename one
+  15       transient mismatch; re-running the whole command is the fix
+  16       indexing did not finish; run nlmt status, then retry with a larger
+           --ready-timeout
+  17       another run holds the lock; wait and retry
+  18       the mask matched nothing; fix the mask or the folder, do not retry unchanged
+  19       the command line was wrong; the message names the fix
+
+RULES THAT MATTER
+
+  * Never add a source by any route other than these tools. A .txt uploaded to NotebookLM
+    as a local file loses its function bodies, silently.
+  * Do not treat a not-yet-ready source as failed. Only the error state is terminal.
+  * Look before destroying: delete and prune both take --dry-run.
+  * An empty --mask is never "everything"; it is a usage error.
+""",
     "workflow": """\
 What these tools automate
 

@@ -49,6 +49,9 @@ class Command:
     description: str
     args: list[Arg] = field(default_factory=list)
     examples: list[tuple[str, str]] = field(default_factory=list)
+    #: Envelope fields this command sets, beyond the common ones. An agent parsing
+    #: --json should not have to guess what comes back.
+    returns: list[tuple[str, str]] = field(default_factory=list)
     planned_at: str | None = None  # milestone that implements it, if not yet built
 
     def to_dict(self) -> dict:
@@ -60,6 +63,7 @@ class Command:
             "planned_at": self.planned_at,
             "arguments": [a.to_dict() for a in self.args],
             "examples": [{"command": c, "does": d} for c, d in self.examples],
+            "returns": [{"field": f, "meaning": m} for f, m in self.returns],
         }
 
 
@@ -137,6 +141,19 @@ COMMANDS: list[Command] = [
              '--drive-only',
              "upload and verify against Drive without touching the notebook"),
         ],
+        returns=[
+            ('notebook_created', 'true if the notebook did not exist and was created'),
+            ('notebook_id', 'internal id of the target notebook'),
+            ('bundle', 'Drive path of the folder this run created'),
+            ('ready', 'true when every added source finished indexing'),
+            ('readiness_signal', 'which signal proved readiness'),
+            ('counts.selected', 'files the mask matched'),
+            ('counts.uploaded', 'files copied to Drive'),
+            ('counts.verified', 'files whose checksum matched after upload'),
+            ('counts.deleted', 'previous sources removed from the notebook'),
+            ('counts.added', 'sources added'),
+            ('counts.ingest_verified', 'sources whose ingested text was compared to the local file'),
+        ],
     ),
     Command(
         name="status",
@@ -152,6 +169,16 @@ COMMANDS: list[Command] = [
              "list every source and its readiness"),
             ('nlmt status --notebook "Engine review" --json',
              "the same, as a parseable envelope"),
+        ],
+        returns=[
+            ('exists', 'false if no notebook has that title'),
+            ('all_ready', 'true when every source has finished indexing'),
+            ('detail', 'list of {title, status} for every source'),
+            ('counts.sources', 'total sources in the notebook'),
+            ('counts.matched', 'sources matching the mask'),
+            ('counts.ask_sources', 'temporary Q<n>- sources present'),
+            ('counts.ready', 'sources that finished indexing'),
+            ('counts.failed', 'sources in the error state'),
         ],
     ),
     Command(
@@ -188,6 +215,17 @@ COMMANDS: list[Command] = [
             ('type question.md | nlmt ask --notebook "Engine review" --json',
              "pipe the question in and parse the envelope"),
         ],
+        returns=[
+            ('ask', 'the ordinal for this ask, such as Q7. With --keep, remove it later with --mask Q7-'),
+            ('transcript', 'path of the saved answer'),
+            ('answer_chars', 'length of the answer'),
+            ('citations', 'how many sources the answer cited'),
+            ('corpus_sources', 'non-ask sources present when the question was asked'),
+            ('kept', 'true if --keep left the ask sources in place'),
+            ('cleanup_mask', 'the mask that removes this ask, when kept'),
+            ('counts.attachments', 'attachment sources created'),
+            ('counts.cleaned_up', 'temporary sources deleted afterwards'),
+        ],
     ),
     Command(
         name="delete",
@@ -210,6 +248,11 @@ COMMANDS: list[Command] = [
             ('nlmt delete --notebook "Engine review" --mask Engine_ --dry-run',
              "list what would be deleted without deleting it"),
         ],
+        returns=[
+            ('targets', 'titles that matched the mask'),
+            ('counts.deleted', 'sources removed'),
+            ('counts.would_delete', 'with --dry-run, what would be removed'),
+        ],
     ),
     Command(
         name="sweep",
@@ -223,6 +266,11 @@ COMMANDS: list[Command] = [
         examples=[
             ('nlmt sweep --notebook "Engine review"',
              "remove every stranded question and attachment"),
+        ],
+        returns=[
+            ('targets', 'ask source titles found'),
+            ('drive_ask_folder_cleared', 'true when the leftover _ask Drive folder was removed'),
+            ('counts.deleted', 'ask sources removed'),
         ],
     ),
     Command(
@@ -243,6 +291,11 @@ COMMANDS: list[Command] = [
             ("nlmt prune --project engine --keep-last 5",
              "delete all but the five most recent bundles"),
         ],
+        returns=[
+            ('bundles', 'every bundle folder in the project'),
+            ('keeping', 'bundles retained by --keep-last'),
+            ('counts.deleted', 'bundle folders removed'),
+        ],
     ),
     Command(
         name="doctor",
@@ -255,6 +308,12 @@ COMMANDS: list[Command] = [
         ),
         args=[DRIVE_REMOTE, DRIVE_ROOT, *COMMON],
         examples=[("nlmt doctor", "check the environment before a long run")],
+        returns=[
+            ('drive_ok', 'true when Drive is reachable'),
+            ('notebooklm_ok', 'true when the NotebookLM session works'),
+            ('notebooklm_account', 'the Google account nlm is logged in as'),
+            ('counts.notebooks', 'notebooks visible to that account'),
+        ],
     ),
     Command(
         name="gen-fixtures",
@@ -287,6 +346,14 @@ COMMANDS: list[Command] = [
              "three small files plus a manifest, for fast iteration"),
             ("nlmt gen-fixtures --out tests\\fixtures\\full --files 20 --size 1000000",
              "a full-scale bundle: 20 files of about 1 MB, as in M9"),
+        ],
+        returns=[
+            ('out', 'directory the bundle was written to'),
+            ('manifest', 'path of manifest.json, holding the ground-truth facts'),
+            ('smoke_question', 'a question answerable only from inside a method body'),
+            ('smoke_expect', 'the value that answer must contain'),
+            ('counts.files', 'files generated'),
+            ('counts.facts', 'facts buried inside method bodies'),
         ],
     ),
 ]
