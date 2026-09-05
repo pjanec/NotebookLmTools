@@ -28,6 +28,12 @@ from ..loader.drive import Drive
 
 log = logging.getLogger("nlmtools.ask")
 
+#: Largest question sent inline. Measured against the live API: 8,403 characters were
+#: accepted and echoed back intact, 12,352 were rejected with INVALID_ARGUMENT, so the
+#: real ceiling is near 10,000. This sits below it with room for the prompt scaffolding.
+#: Anything larger falls back to the question-as-source route.
+INLINE_LIMIT = 8_000
+
 #: Attachments must be text-like. Embedding binaries is out of scope, and a binary would
 #: arrive as mojibake rather than failing loudly.
 TEXT_SUFFIXES = {
@@ -58,18 +64,38 @@ def _check_attachment(path: Path) -> None:
         )
 
 
-def build_prompt(question_title: str, attachments: list[tuple[str, str]]) -> str:
-    """Generate the query prompt, bridging the naming gap (design.md 8.3).
+def build_prompt(
+    attachments: list[tuple[str, str]],
+    *,
+    question: str | None = None,
+    question_title: str | None = None,
+) -> str:
+    """Generate the query prompt.
 
-    The question body refers to `config.json`; the notebook knows a source called
-    `Q7-a1-config.json.txt`. Without an explicit mapping the model cannot connect them.
+    The question is sent **inline** when it fits (`INLINE_LIMIT`), and only falls back to
+    the question-as-source route when it does not. Inline is better in every way that
+    matters here: it saves creating a source, waiting for it to index and deleting it
+    again -- around two minutes -- and it leaves nothing behind to strand and hijack later
+    answers if the process is killed before cleanup.
+
+    Either way the prompt must **bridge the naming gap** (design.md 8.3): the question
+    refers to `config.json` while the notebook knows a source titled
+    `Q7-a1-config.json.txt`, and without an explicit mapping the model cannot connect the
+    two.
     """
-    lines = [f'Answer the question in source "{question_title}".']
+    lines: list[str] = []
+    if question is not None:
+        lines.append(question.strip())
+    else:
+        lines.append(f'Answer the question in source "{question_title}".')
+
     if attachments:
-        lines.append("The data it refers to is attached as these sources:")
+        lines.append("")
+        lines.append("The data referred to above is attached as these sources:")
         width = max(len(original) for original, _ in attachments)
         for original, title in attachments:
             lines.append(f'  {original:<{width}} -> source "{title}"')
+    lines.append("")
     lines.append("Use the other sources in this notebook as evidence.")
     return "\n".join(lines)
 
@@ -202,20 +228,51 @@ def run_ask(
                 mapping.append((path.name, title))
                 envelope.bump("attachments")
 
-            question_title = naming.question_title(ordinal, slug)
-            created.append(nlm.add_text(notebook_id, question_title, question))
+            # Send the question inline when it fits. Only a question too large for the
+            # API becomes a source, because that route costs an indexing wait and leaves
+            # something behind to strand.
+            inline = len(question) <= INLINE_LIMIT
+            if inline:
+                prompt = build_prompt(mapping, question=question)
+                envelope.set(question_inline=True)
+            else:
+                question_title = naming.question_title(ordinal, slug)
+                created.append(nlm.add_text(notebook_id, question_title, question))
+                prompt = build_prompt(mapping, question_title=question_title)
+                envelope.set(question_inline=False)
+                log.info("question is %d chars; sent as a source", len(question))
 
-            nlm.wait_until_ready(
-                notebook_id, created,
-                timeout=ready_timeout, poll_interval=poll_interval,
-            )
-
-            prompt = build_prompt(question_title, mapping)
+            if created:
+                nlm.wait_until_ready(
+                    notebook_id, created,
+                    timeout=ready_timeout, poll_interval=poll_interval,
+                )
             log.info("querying")
-            result = nlm.query(
-                notebook_id, prompt, timeout=query_timeout,
-                fresh=fresh, conversation_id=conversation_id,
-            )
+            try:
+                result = nlm.query(
+                    notebook_id, prompt, timeout=query_timeout,
+                    fresh=fresh, conversation_id=conversation_id,
+                )
+            except ToolError as error:
+                # The API refuses an over-long query quickly and distinctly, so a
+                # misjudged size costs seconds rather than the run: fall back to the
+                # source route and carry on.
+                if not inline or "INVALID_ARGUMENT" not in str(error):
+                    raise
+                log.info("query rejected as too long; retrying with the question as a source")
+                question_title = naming.question_title(ordinal, slug)
+                created.append(nlm.add_text(notebook_id, question_title, question))
+                nlm.wait_until_ready(
+                    notebook_id, created,
+                    timeout=ready_timeout, poll_interval=poll_interval,
+                )
+                envelope.set(question_inline=False)
+                envelope.warn("question exceeded the inline limit; sent as a source instead")
+                result = nlm.query(
+                    notebook_id,
+                    build_prompt(mapping, question_title=question_title),
+                    timeout=query_timeout, fresh=fresh, conversation_id=conversation_id,
+                )
             answer = result.get("answer", "") or ""
             # Reported so a caller can deliberately keep a line of questioning together:
             # warm the architect up, then ask the real question in the same thread.

@@ -466,3 +466,40 @@ dies mid-run.
 so `doctor` now reports both. The Drive side still cannot report its account, so the
 identity match stays inferred rather than checked: a successful load is the proof, since
 NotebookLM only sees Drive files owned by the same account.
+
+## 2026-09-05 — how long a question can be sent inline
+
+The web UI caps questions at a few paragraphs, but the API is more generous. Measured with
+a marker on the payload's last line, so a truncated tail cannot be echoed:
+
+| Payload | Result |
+|---|---|
+| 4,361 chars | echoed intact (69.8s) |
+| 8,403 chars | echoed intact (72.5s) |
+| 12,352 chars | rejected, `INVALID_ARGUMENT` (2.3s) |
+| 14,326 chars | rejected, `INVALID_ARGUMENT` (2.3s) |
+| 16,394 chars | rejected, `INVALID_ARGUMENT` (4.1s) |
+
+So the ceiling is near 10,000 characters. Two useful properties: rejection is **fast and
+distinct**, not silent truncation, so a misjudged size costs about two seconds; and a
+realistic long question (391 words, ~2.5 KB) fits comfortably.
+
+**`ask` now sends the question inline** (`INLINE_LIMIT = 8000`, below the ceiling with room
+for prompt scaffolding), and falls back to the question-as-source route when the question
+is larger or the API rejects it anyway. That removes a source creation, an indexing wait
+and a deletion -- and, more valuable, removes the thing that gets stranded and hijacks
+later answers when a run is killed.
+
+Verified against the real notebook: an inline question with a Drive attachment returned all
+seven attachment-only values with 17 citations, so the §8.3 name mapping does not depend on
+the question being a source.
+
+**Timing, honestly.** That run took 233s, not less than the 125s measured earlier -- the
+earlier figure was on a small test notebook. Against this 45 MB notebook the query alone is
+70-110s, and an attachment still needs its own upload, registration and indexing wait.
+Inline removes the *question's* round-trip, which is worth roughly a minute, but it does
+not make an ask with attachments fast.
+
+Attachments deliberately still go through Drive. Small ones could ride inline within the
+same budget, but accepted is not the same as useful: a fenced inline block competes with
+45 MB of corpus for attention, and that needs measuring before it becomes a default.
