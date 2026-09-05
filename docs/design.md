@@ -80,7 +80,9 @@ listener, chunk generation from real source code (an upstream concern).
    know what was meant. Exit 14 with both IDs; never guess.
 6. **Whole-run rerun is the recovery path.** No partial-resume logic. A failed run is fixed
    by running it again, and doing so must converge.
-7. **`Q-` is reserved** for question sources (§8) and excluded from every mask operation.
+7. **`Q<n>-` is reserved** for ephemeral ask sources (§8). Any source title matching
+   `^Q\d+-` is excluded from every mask operation in `load`, always, even if a configured
+   mask would otherwise match it. Do not name corpus files that way.
 8. **Secrets never touch a tracked file, and never sit in plaintext on disk** (§4, and the
    repo-wide rule in `CLAUDE.md`).
 
@@ -177,7 +179,8 @@ machinery in `common` (§10).
 | `nlmt load` | the full pipeline: select -> upload -> load -> wait (§6) |
 | `nlmt status` | resolve a notebook, enumerate its sources, report mask-matching set and readiness |
 | `nlmt ask` | long-question protocol (§8) |
-| `nlmt sweep` | delete every source titled `Q-*` from a notebook |
+| `nlmt delete` | delete sources matching a mask — the same primitive `load` uses (§5.6) |
+| `nlmt sweep` | delete **every** ask source (`Q<n>-*`) and any stray `_ask` Drive folder |
 | `nlmt prune` | list and delete old Drive bundle folders (§6.1) |
 | `nlmt doctor` | verify both auths and assert the two Google identities match (M0) |
 | `nlmt gen-fixtures` | generate synthetic test bundles (§9) |
@@ -307,6 +310,25 @@ schema as structured data, so an agent can enumerate the interface without parsi
 so the two cannot drift. Any behaviour change that is not reflected in help is an
 incomplete change.
 
+### 5.6 `nlmt delete`
+
+`nlmt delete --notebook X --mask PREFIX` deletes the notebook's sources whose title starts
+with any given mask. It is the same delete-by-mask primitive `load` uses in step 9, exposed
+directly, so an ask's sources can be removed by hand:
+
+```
+nlmt delete --notebook "Engine - locking review" --mask Q7-
+```
+
+- At least one `--mask` is required. An empty or missing mask is exit 19, never "delete
+  everything".
+- `--dry-run` lists what would go without touching anything.
+- Unlike `load`, this command *may* target `Q<n>-` sources — that is its main use. The §3.7
+  exclusion protects them from `load`'s automatic delete-by-mask, not from a deliberate one.
+
+Deletion is low-stakes by construction: corpus sources are always restorable by rerunning
+`load` from the local files, and ask sources are ephemeral by design.
+
 ---
 
 ## 6. `load`
@@ -408,18 +430,18 @@ attachments are temporary sources, created for one query and removed afterwards.
 
 ```
  1. acquire the notebook lock (not merely check it)
- 2. ask_id = "<utc-timestamp>-<slug>"
- 3. for each --attach FILE:                                     (§8.2)
-      upload to /NotebookLmTools/<project>/_ask/<ask_id>/<name>.txt
+ 2. n = next free ask ordinal for this notebook                 (§8.2)
+ 3. for each --attach FILE, i = 1..k:                           (§8.2)
+      upload to /NotebookLmTools/<project>/_ask/Q<n>/<name>.txt
       verify by checksum                                        -> exit 13 on mismatch
       source_add(nb, source_type="drive", document_id=<id>,
-                 title="Q-<ask_id>-A<n>-<name>.txt")            -> attachment source
- 4. source_add(nb, source_type="text", title="Q-<ask_id>-Q",
+                 title="Q<n>-a<i>-<name>.txt")                  -> attachment source
+ 4. source_add(nb, source_type="text", title="Q<n>-q-<slug>",
                text=<long question body>)                       -> question source
  5. wait for every source created in 3 and 4 to finish indexing (§7)  -> exit 16
  6. notebook_query(nb, <generated prompt>)                       (§8.3)
  7. save the answer
- 8. delete every source created in 3 and 4, and the _ask/<ask_id>/
+ 8. delete every source created in 3 and 4, and the _ask/Q<n>/
     Drive folder                                     # in a finally block
  9. release the lock
 ```
@@ -448,17 +470,29 @@ bytes are unchanged; only the name gains a suffix. Keeping the original name vis
 matters, because the question body refers to the file by the name the operator or agent
 knows it by.
 
-All ephemeral sources share one `ask_id` and the reserved `Q-` prefix (§3.7):
+Every source belonging to one ask shares a short **ordinal prefix** `Q<n>-` (§3.7):
 
 ```
-Q-<ask_id>-Q                        the question body
-Q-<ask_id>-A1-config.json.txt       first attachment
-Q-<ask_id>-A2-metrics.csv.txt       second attachment
+Q7-q-locking-review        the question body
+Q7-a1-config.json.txt      first attachment
+Q7-a2-metrics.csv.txt      second attachment
 ```
 
-One reservation covers everything, so `nlmt sweep` still finds strays with a single rule,
-and mask operations still exclude all of it. The `ask_id` groups one ask's sources so
-cleanup removes exactly those and nothing else.
+The point of the ordinal is that **`Q7-` is a mask**, so the whole ask is removable with the
+same delete-by-mask primitive everything else uses — `nlmt delete --mask Q7-` (§5.6) —
+without the operator having to look anything up or type a timestamp from a phone.
+
+The `q-` and `a<i>-` markers say at a glance what each source is, and keep an attachment
+that happens to be named `question.txt` from colliding with the question body. The
+attachment keeps its original filename after that marker, because §8.3 has to map it back
+to the name the question body uses.
+
+**Allocating the ordinal.** `n` is one greater than the highest ordinal already present
+among the notebook's `^Q\d+-` sources, or 1 if there are none. It is derived from a
+listing, so it keeps principle 3.3 — no persisted state — and the notebook lock makes the
+read-then-allocate safe. Ordinals are reused after an ask is deleted; that is harmless,
+because the durable record of an ask is its transcript in `answers/`, whose filename
+carries the full timestamp.
 
 Attachments must be text-like (JSON, CSV, log, plain text). A binary file is refused with
 exit 19 and a hint; embedding binaries is out of scope.
@@ -467,14 +501,14 @@ exit 19 and a hint; embedding binaries is out of scope.
 
 The query prompt is generated, not written by the caller, and must **bridge the naming
 gap**: the question body refers to `config.json`, while the notebook knows a source titled
-`Q-<ask_id>-A1-config.json.txt`. Without an explicit mapping the model cannot reliably
+`Q7-a1-config.json.txt`. Without an explicit mapping the model cannot reliably
 connect the two.
 
 ```
-Answer the question in source "Q-<ask_id>-Q".
+Answer the question in source "Q7-q-locking-review".
 The data it refers to is attached as these sources:
-  config.json   -> source "Q-<ask_id>-A1-config.json.txt"
-  metrics.csv   -> source "Q-<ask_id>-A2-metrics.csv.txt"
+  config.json   -> source "Q7-a1-config.json.txt"
+  metrics.csv   -> source "Q7-a2-metrics.csv.txt"
 Use the other sources in this notebook as evidence.
 ```
 
@@ -489,13 +523,17 @@ Use the other sources in this notebook as evidence.
 - Attachments count against the notebook's source limit while the ask is in flight.
 - Step 8 is in `finally`, and cleans up **both** the notebook sources and the `_ask` Drive
   folder. An abandoned question or attachment source pollutes retrieval for every later
-  answer in that notebook. `--keep` skips it when debugging; `nlmt sweep` clears strays,
-  deleting `Q-*` sources and leftover `_ask/*` Drive folders alike.
+  answer in that notebook. `--keep` skips it when debugging — and because the ask is a
+  single mask, cleaning up afterwards is just `nlmt delete --mask Q7-`. `nlmt sweep` is the
+  blunt version: every `Q<n>-` source and every leftover `_ask/*` Drive folder.
+- The envelope reports the allocated ordinal as `ask: "Q7"`, so a caller that used `--keep`
+  knows the mask to delete later without having to enumerate sources.
 - Default query budget 120s wall-clock. For heavy questions over a 20-source corpus, use
   `notebook_query_start` + poll `notebook_query_status` rather than raising the sync
   timeout.
-- Answers are written to `answers/<notebook-slug>/<ask_id>.md` with the question body, the
-  list of attachments, the answer, and the live source list at the time of asking.
+- Answers are written to `answers/<notebook-slug>/<timestamp>-Q<n>-<slug>.md` with the
+  question body, the list of attachments, the answer, and the live source list at the time
+  of asking. The timestamp is what makes the record durable, since ordinals get reused.
   `answers/` is gitignored — transcripts contain source excerpts.
 - Question and attachment sources live in the same notebook as the corpus; a separate
   notebook cannot see the corpus, so the question could not be answered there.
@@ -596,6 +634,7 @@ Locks are per notebook, so different notebooks can be loaded in parallel.
 | §4 empty selection has no code | exit 18 `EMPTY_SELECTION` | the brief mandates the refusal and tests it, but never assigned a code |
 | §6 `ask` refuses if the lock is held | `ask` takes the lock | otherwise a concurrent `load` can delete the corpus mid-question |
 | §6 a question is text only | a question may carry `--attach`ed data files, uploaded via Drive as `<name>.txt` (§8) | operator requirement; attachment data is what the answer depends on, so it takes the verified path, not an unproven one |
+| §0.3.8 reserves the literal prefix `Q-` | reserves `Q<n>-`, an ordinal per ask, plus a `nlmt delete --mask` command | one ask is then a single short mask, deletable by hand with the same primitive `load` uses, without typing a timestamp |
 | M5 asserts a preserved Drive file ID | dropped | meaningless under folder-per-bundle |
 | M1 uses three real chunks | synthetic generator with a ground-truth manifest | no real data available yet |
 | §2 `uv tool install` | install into the project venv | self-contained and transferable |
@@ -654,8 +693,9 @@ in `tests/test_integration.md`.
   instruction set rather than summarising; the answer **cites values that could only have
   come from inside the attachment**, proving it was ingested intact and that the §8.3
   name mapping worked; and the notebook is left with exactly its pre-question sources.
-  Repeat once with `--keep`, then confirm `nlmt sweep` clears both the sources and the
-  Drive folder.
+  Repeat once with `--keep`, then confirm `nlmt delete --mask Q<n>-` removes exactly that
+  ask and nothing else, and that `nlmt sweep` clears any remaining ask sources and Drive
+  folders. Confirm a subsequent `load` leaves a kept `Q<n>-` source untouched (§3.7).
 - **M8 — Failure modes.**
   - Kill mid-load, rerun: converges, no duplicates, no stale-lock deadlock.
   - Delete the cache, rerun: slower, identical result. If behaviour changes, the cache is
