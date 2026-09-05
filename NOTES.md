@@ -503,3 +503,13 @@ not make an ask with attachments fast.
 Attachments deliberately still go through Drive. Small ones could ride inline within the
 same budget, but accepted is not the same as useful: a fenced inline block competes with
 45 MB of corpus for attention, and that needs measuring before it becomes a default.
+
+### Measured ask timings against the 45 MB notebook
+
+| Shape | Elapsed | Sources created |
+|---|---|---|
+| plain question, inline | **123.8s** | none |
+| question + one attachment | 233.3s | one, deleted afterwards |
+
+A plain question is now a pure query: nothing is created in the notebook, so nothing can be
+stranded. The cost is the query itself, which is why an ask is minutes rather than seconds.

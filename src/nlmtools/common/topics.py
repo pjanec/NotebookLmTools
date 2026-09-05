@@ -40,7 +40,10 @@ ASK A LONG QUESTION, WITH DATA
 WHAT TO DO WITH EACH EXIT CODE
 
   0        continue
-  10, 11   a human must re-authenticate; do not retry in a loop
+  10       Drive auth; a human must re-run setup.ps1
+  11       NotebookLM auth, AFTER the tool already tried to recover by itself. It
+           re-authenticates automatically when the session expires, so this code means
+           that failed and a human must run 'nlm login'. Do not retry in a loop.
   12       quota; wait, then retry once
   13       STOP. Content did not survive intact. Do not trust answers from this notebook.
   14       two notebooks share the title; a human must rename one
@@ -58,6 +61,11 @@ RULES THAT MATTER
   * Do not treat a not-yet-ready source as failed. Only the error state is terminal.
   * Look before destroying: delete and prune both take --dry-run.
   * An empty --mask is never "everything"; it is a usage error.
+  * Budget about two minutes per ask against a large notebook. The cost is the query
+    itself, not the tool; attachments add an upload and an indexing wait on top.
+  * The architect is worth consulting for design intent and prior art across a corpus too
+    large to read. It is an AI over a snapshot: verify every concrete claim against the
+    real code before acting on it, and prefer claims that carry citations.
 """,
     "workflow": """\
 What these tools automate
