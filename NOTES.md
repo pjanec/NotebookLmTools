@@ -419,3 +419,26 @@ measurement holds for a bare query with no source indirection and no history reb
 likely explanation is that the web UI streams tokens as they arrive and so *feels*
 immediate, while the API returns only on completion. Worth remembering when budgeting an
 agent's time: an ask is a minute or two, not seconds.
+
+### NotebookLM session lifetime, measured (2026-09-05)
+
+| Time | Event |
+|---|---|
+| 13:34 | `nlm login` succeeds — 50 cookies, CSRF token, account confirmed |
+| ~13:50 | every call returns "Authentication expired" |
+| ~14:05 | works again with no re-login (a `setup.ps1` run reported the session valid) |
+| 15:00-16:20 | loads, asks and queries all succeed |
+| ~16:35 | "Authentication expired" again; three consecutive `doctor` runs all fail |
+
+So a session lasted roughly **three hours**, not the 2-4 weeks the original brief assumed,
+and re-authentication is interactive — a browser sign-in a human must perform.
+
+The three consecutive failures matter: an earlier recovery had suggested exit 11 might be
+transient and worth retrying automatically. It is not. Retrying would have burned time and
+still needed a human, so `NLM_AUTH` stays a stop-and-escalate condition.
+
+**Consequence for autonomous use.** An agent asking the architect must expect exit 11 as a
+normal outcome, not an exception: it means "the architect is unavailable until a human
+signs in again", and the agent should carry on with whatever it can do without it rather
+than blocking or looping. Any unattended schedule (a nightly load, say) will fail unless
+someone has signed in recently.
