@@ -133,3 +133,26 @@ Cloud OAuth client (~10 minutes, once) and pass it via `-DriveClientId` /
 Note the scope analysis is unchanged and still favours our own client if we go that way:
 `drive.file` is non-sensitive, so the app can be published to production without Google
 verification, and its refresh tokens do not expire on the 7-day "Testing" clock.
+
+### Resolution (2026-09-05): keep rclone, bring our own client id
+
+Considered replacing rclone with a Python Google Drive client, on the reasoning that the
+Cloud console step is now unavoidable so rclone's main advantage had evaporated. Rejected
+after re-examining it, because the argument does not survive contact with what is already
+built:
+
+| Claimed gain from dropping rclone | Reality |
+|---|---|
+| token in Credential Manager rather than an encrypted `rclone.conf` | marginal; rclone 1.75.1 does support `config encryption`, and the password is already in Credential Manager |
+| removes PowerShell 5.1 native-command fragility | already solved by `Invoke-Native` |
+| no binary to fetch and pin | already done, checksum-verified against the published `SHA256SUMS` and pinned in `tools/rclone.lock.json` |
+| free md5 verification | `rclone check --checksum` already provides it |
+
+Against those: roughly 250 lines of new code to own, and losing rclone's resumable
+uploads, retries and throttling handling, which would have had to be reimplemented worse.
+
+**What actually changed today is only that the shared client id is going away.** rclone
+itself is actively maintained and remains the right tool; it just has to be handed our own
+credentials. That is one argument pair to `config create`, already implemented.
+
+`docs/google-oauth-setup.md` has the console steps.
