@@ -104,6 +104,7 @@ that has never read any documentation can still recover.
 | [`docs/requirements-original-brief.md`](docs/requirements-original-brief.md) | the original brief, frozen; superseded where it differs |
 | [`NOTES.md`](NOTES.md) | running log: what the undocumented API actually does, and why decisions were made |
 | [`docs/ask-the-architect-guide.md`](docs/ask-the-architect-guide.md) | drop-in guidance for a consuming project's `CLAUDE.md` |
+| [`docs/refreshing-the-bundle-guide.md`](docs/refreshing-the-bundle-guide.md) | when and how an agent should refresh the snapshot |
 | [`CLAUDE.md`](CLAUDE.md) | rules for agents working in this repository |
 
 ## Development
