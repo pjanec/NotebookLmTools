@@ -392,27 +392,64 @@ if (Test-Path $RcloneExe) {
 
 # -- 6. Drive credentials -------------------------------------------------------------
 
+function Invoke-VenvPython {
+    <#
+        Run a short Python script in the project venv.
+
+        Always via a temp file, never `python -c`: Windows PowerShell 5.1 mangles native
+        arguments containing quotes or spaces, so an inline script arrives as a syntax
+        error. This is the same failure that broke Python detection, so there is exactly
+        one way to call Python from this script and it is this function.
+    #>
+    param(
+        [string[]]$Lines,
+        [string]$StdIn,
+        [switch]$IgnoreFailure
+    )
+    $path = Join-Path ([System.IO.Path]::GetTempPath()) "nlmt-$([guid]::NewGuid().ToString('n')).py"
+    try {
+        $Lines | Set-Content -Path $path -Encoding utf8
+        if ($PSBoundParameters.ContainsKey('StdIn')) {
+            $output = $StdIn | & $VenvPython $path 2>&1
+        } else {
+            $output = & $VenvPython $path 2>&1
+        }
+        if ($LASTEXITCODE -ne 0 -and -not $IgnoreFailure) {
+            throw "python failed (exit $LASTEXITCODE): $(($output | Out-String).Trim())"
+        }
+        return ($output | Out-String)
+    } finally {
+        Remove-Item $path -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Get-StoredPassword {
-    $code = @"
-import keyring
-value = keyring.get_password("$KeyService", "$KeyAccount")
-print(value or "")
-"@
-    $result = & $VenvPython -c $code 2>$null
-    if ($LASTEXITCODE -ne 0) { return '' }
-    return ($result | Out-String).Trim()
+    try {
+        $result = Invoke-VenvPython -Lines @(
+            'import keyring'
+            "value = keyring.get_password('$KeyService', '$KeyAccount')"
+            'print(value or "")'
+        )
+    } catch {
+        return ''
+    }
+    return $result.Trim()
 }
 
 function Set-StoredPassword {
     param([string]$Value)
-    # Passed on stdin, never as a command-line argument: arguments are visible to other
-    # processes and land in shell history.
-    $code = @"
-import sys, keyring
-keyring.set_password("$KeyService", "$KeyAccount", sys.stdin.readline().rstrip("\n"))
-"@
-    $Value | & $VenvPython -c $code
-    if ($LASTEXITCODE -ne 0) { Fail 'could not store the password in Windows Credential Manager' 'check that the keyring package installed correctly' }
+    # The password goes in on stdin, never as a command-line argument: arguments are
+    # visible to other processes and land in shell history.
+    try {
+        Invoke-VenvPython -StdIn $Value -Lines @(
+            'import sys, keyring'
+            'value = sys.stdin.readline().rstrip("\r\n")'
+            "keyring.set_password('$KeyService', '$KeyAccount', value)"
+        ) | Out-Null
+    } catch {
+        Fail "could not store the password in Windows Credential Manager: $_" `
+             'check that the keyring package installed correctly, then re-run'
+    }
 }
 
 Write-Step 'Configuring Google Drive access'
