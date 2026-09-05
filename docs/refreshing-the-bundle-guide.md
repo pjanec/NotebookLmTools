@@ -80,24 +80,15 @@ cd D:\WORK\IOS-IG-SimHost-FDP
 dump.bat
 ```
 
-This writes a **new batch with a new ordinal** — `HROT.Eng_275.01.txt` becomes
-`HROT.Eng_276.01.txt`, and so on.
+That produces the whole bundle — sources and design documents alike — and **replaces** the
+previous one, so only the new batch is left in `.dumps\`. Each batch carries a new ordinal:
+`HROT.Eng_275.01.txt` becomes `HROT.Eng_276.01.txt`, and so on.
 
-### 2. Check that only one batch is present
+You do not need to know what goes into the bundle or how it is split. All that matters
+downstream is that every file starts with `HROT.`, `FDP.` or `Docs.`, which is what the
+masks below select.
 
-**This matters.** The ordinal is part of the filename, so a new batch does not overwrite the
-old one. If both remain in `.dumps\`, the next load uploads **both**, and the architect ends
-up reading two versions of the same code — which is worse than a stale snapshot, because it
-will answer from whichever it happens to retrieve.
-
-```
-dir "D:\WORK\IOS-IG-SimHost-FDP\.dumps\*.txt"
-```
-
-Every `FDP.*` and `HROT.*` file must carry the same ordinal. Delete any older-ordinal files
-before loading.
-
-### 3. Load
+### 2. Load
 
 ```
 D:\WORK\NotebookLM\.venv\Scripts\nlmt.exe load ^
@@ -121,7 +112,7 @@ the notebook is ready to query.
 carries a `hint` saying what to do; exit 13 means content did not survive intact and the
 notebook should not be trusted until it is understood.
 
-### 4. Confirm before relying on it
+### 3. Confirm before relying on it
 
 ```
 D:\WORK\NotebookLM\.venv\Scripts\nlmt.exe status --notebook "SimHost FDP review"
@@ -132,15 +123,17 @@ should be no `Q<n>-` sources left over.
 
 ---
 
-## About the design documents
+## If something looks wrong after a load
 
-`dump.bat` regenerates the **source** bundle only — the `FDP.*` and `HROT.*` files. The
-`Docs.*` files come from a separate process that is not part of that script, and they carry
-no ordinal, so a refresh of them would overwrite in place.
+Two symptoms are worth recognising, because neither announces itself:
 
-If a question turns on design intent and the documentation has moved on, regenerating the
-sources alone will not help. **Ask the operator how the `Docs.*` bundle is produced** rather
-than assuming it is current or trying to reproduce it.
+- **Sources with two different ordinals in `status`.** The generator replaces the bundle, so
+  this should not happen; if it does, the dump did not complete and the architect is now
+  reading two versions of the same code. Clear `.dumps\`, regenerate, and load again.
+- **`Q<n>-` sources present.** Left behind by an interrupted `ask`. They corrupt later
+  answers — a question source is instruction-shaped text sitting in the corpus, and
+  NotebookLM will answer *about it*. `nlmt sweep --notebook "SimHost FDP review"` removes
+  them, and the next `ask` clears them automatically.
 
 ---
 
