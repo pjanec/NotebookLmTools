@@ -181,9 +181,11 @@ machinery in `common` (§10).
 | `nlmt prune` | list and delete old Drive bundle folders (§6.1) |
 | `nlmt doctor` | verify both auths and assert the two Google identities match (M0) |
 | `nlmt gen-fixtures` | generate synthetic test bundles (§9) |
+| `nlmt help [topic]` | concept help: `exit-codes`, `masks`, `secrets`, `readiness`, `workflow` |
+| `nlmt --ai` | the complete agent-oriented reference, on stdout, in one shot (§5.5) |
 
-`status` and `doctor` were named but never specified in the brief; `prune` and
-`gen-fixtures` are new.
+`status` and `doctor` were named but never specified in the brief; `prune`,
+`gen-fixtures`, `help` and `--ai` are new.
 
 ### 5.2 Arguments over configuration
 
@@ -231,9 +233,24 @@ envelope carries detail.
 }
 ```
 
-On failure: `ok: false` and
-`error: {"code": 14, "class": "AMBIGUOUS", "message": "...", "detail": {...}}`. The
-`detail` object is the one place internal IDs surface (§3.1).
+On failure:
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": 14,
+    "class": "AMBIGUOUS",
+    "message": "two notebooks are titled 'Engine - locking review'",
+    "hint": "rename or delete one in the NotebookLM web UI, then rerun",
+    "detail": {"notebook_ids": ["...", "..."]}
+  }
+}
+```
+
+`hint` is mandatory on every error and states the **corrective action**, so a caller that
+never read the documentation can still recover (§5.5). The `detail` object is the one place
+internal IDs surface (§3.1).
 
 Field names never change meaning between versions — add fields, do not repurpose them. A
 partial failure still emits a complete envelope with accurate counts, so a caller can see
@@ -249,6 +266,44 @@ The long-question protocol (§8) straddles that line: it is a query concern that
 sources. It lives here as `nlmt ask`, implemented once and correctly, so an agent calls it
 instead of improvising `source_add` + `source_delete` through MCP. An agent doing it by
 hand is exactly how question sources get stranded in a notebook.
+
+### 5.5 Help is a feature, not documentation
+
+These tools are driven by an AI agent as often as by a human, and an agent has no manual
+and no memory of yesterday's session. It learns the tool from two places: the help text,
+and the error it just got back. Both are therefore part of the product, held to the same
+standard as the code, and tested (M8).
+
+**Every level responds to `--help`.** `nlmt --help` lists the subcommands with a
+one-line purpose each. `nlmt <cmd> --help` documents every argument with its type,
+default, whether it is required, how it interacts with the config file, and **at least one
+complete worked example** that could be pasted into a shell unchanged. No argument is
+documented by restating its own name.
+
+**`nlmt --ai` prints the whole reference at once** — every subcommand, every argument, the
+exit-code table, the output envelope schema, the reserved `Q-` prefix, the mask semantics,
+and the workflow the tools automate. One dense document on stdout, written for a model
+rather than for a terminal reader, so an agent can orient itself in a single call instead
+of probing subcommand by subcommand. The `nlm` CLI has the same convention; this mirrors it
+deliberately.
+
+**Failure teaches.** A usage error (exit 19) prints what was wrong, what was expected, and
+a correct example — then the relevant subcommand help in full, not a one-line "invalid
+argument". An unknown or misspelled argument or subcommand suggests the nearest valid one.
+Every error, in text and in JSON alike, carries the `hint` field from §5.3 naming the
+corrective action. The rule of thumb: **a caller who has never read the docs should be able
+to reach a correct command from any error message the tools can produce.**
+
+**`nlmt help <topic>`** covers the concepts that no single argument owns — the exit-code
+table, mask semantics and the `Q-` reservation, where secrets live, what readiness means
+and why queries must wait for it, and the end-to-end workflow.
+
+**Machine-readable introspection.** `nlmt --help --json` emits the command and argument
+schema as structured data, so an agent can enumerate the interface without parsing prose.
+
+**Help never lies.** Argument help is generated from the same definitions the parser uses,
+so the two cannot drift. Any behaviour change that is not reflected in help is an
+incomplete change.
 
 ---
 
@@ -355,6 +410,14 @@ while the notebook's lock is held.
 5. source_delete(nb, source_id=qid, confirm=True)     # in a finally block
 6. release the lock
 ```
+
+**Questions do not go through Drive.** A question source is added directly as
+`source_type="text"`, and that is correct — it is *not* a violation of §1.1. The rule
+there forbids `source_type="file"`, a **local file upload**, because NotebookLM's file
+ingestion strips function bodies out of source code. A question is prose instructions, has
+no code bodies to lose, and is deleted minutes later. Routing it through Drive would add a
+round-trip and a stray Drive file for nothing. Drive is for the corpus; questions are typed
+straight in.
 
 - Step 1 **takes** the lock; the brief only had `ask` refuse when one was held, which would
   let a concurrent `load` delete the corpus out from under a running question.
@@ -524,6 +587,11 @@ in `tests/test_integration.md`.
     load-bearing and must be fixed.
   - Every command with `--json`, piped through a JSON parser: parses cleanly, nothing but
     the envelope on stdout. Repeat for a failure case and confirm the envelope survives.
+  - **Self-teaching check (§5.5).** Every subcommand's `--help` carries a pasteable
+    example. `nlmt --ai` covers every subcommand and every exit code. Provoke each usage
+    error in turn and confirm each one names the corrective action; every error envelope
+    carries a non-empty `hint`. As an end-to-end test, hand only `nlmt --ai` to an agent
+    with no other context and confirm it can complete a load unaided.
   - Two notebooks with the same title: exit 14, both IDs printed, nothing modified.
   - Empty mask result: refuses; deletes nothing.
   - Both auth failures simulated: distinguishable exit codes 10 and 11.

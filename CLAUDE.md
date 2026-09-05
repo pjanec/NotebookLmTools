@@ -59,3 +59,14 @@ Never convert them to native Google Docs.
   it differs from the design. Do not edit it.
 - `NOTES.md` — running log of API surprises, timings, and decisions. Where the installed
   `nlm` contradicts the design, the tool wins; record it here.
+
+Two clarifications that follow from that rule, so they are not re-litigated:
+
+- **Question sources bypass Drive.** `nlmt ask` adds the question with
+  `source_type="text"`, directly. That is correct and not an exception to the rule above:
+  what is forbidden is `source_type="file"` (a local *file upload*), because file ingestion
+  strips code bodies. A question is prose and is deleted minutes later.
+- **The tools must teach themselves.** Help text and error messages are part of the
+  product, not documentation about it: every argument documented with a pasteable example,
+  `nlmt --ai` as a one-shot agent reference, and every error naming its corrective action.
+  See `docs/design.md` §5.5. A behaviour change that does not update help is incomplete.
