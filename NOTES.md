@@ -198,3 +198,57 @@ in mind: the session survives across runs so the full login is a one-time cost p
 (cookies last roughly 2-4 weeks and refresh from this profile), and this directory is
 credential-bearing, so it must never be copied into the repo or into a backup that gets
 committed.
+
+## 2026-09-05 — SOLVED: the CLI's mime enum was the whole problem
+
+The operator reported that the web UI ingests a 2 MB `.txt` from Drive **in seconds**,
+while `nlm source add --drive` took minutes at 300 KB and failed outright at 1 MB. That
+gap said the CLI was not doing what the web UI does.
+
+Reading `notebooklm_tools/core/sources.py`, `add_drive_source()` takes a free-form
+`mime_type` argument. The restriction lives one layer up, in
+`notebooklm_tools/services/sources.py`:
+
+```python
+DRIVE_MIME_TYPES = {
+    "doc":    "application/vnd.google-apps.document",
+    "slides": "application/vnd.google-apps.presentation",
+    "sheets": "application/vnd.google-apps.spreadsheet",
+    "pdf":    "application/pdf",
+}
+```
+
+Four values, no `text/plain`. So `nlm source add --drive` on a plain `.txt` was telling
+NotebookLM "this is a Google Doc" about a file that is not one — hence a source that
+listed but never resolved (its title stayed the raw Drive file ID, `status: 3`).
+
+**Calling the library directly with the correct mime type fixes it completely:**
+
+```python
+client.add_drive_source(notebook_id, drive_file_id, title, mime_type="text/plain")
+```
+
+Measured against a 1,002,523-byte plain `.txt` on Drive:
+
+| | Doc conversion route | `text/plain` route |
+|---|---|---|
+| 1 MB source | failed (`status` 3/5) | **ready in ~13 s** |
+| ingested vs local | 137.8% (Doc reflow) at 500 KB | **100.0% — exact** |
+| buried body values | complete up to 500 KB | **complete at 1 MB** |
+| title | Doc name | real filename |
+
+### What this settles
+
+- **§12 item 3 is answered: yes**, `source_type="drive"` accepts a plain `.txt`, provided
+  the mime type says so. `docs/design.md` §1.2 — plain text on Drive, no conversion — was
+  right, and the operator's manual workflow is reproducible after all.
+- **Do not drive NotebookLM through the `nlm` CLI.** Use `notebooklm_tools` as a Python
+  library. The CLI cannot express the one thing this project depends on, and shelling out
+  also costs subprocess parsing and loses real exceptions. `get_client()` in
+  `notebooklm_tools.cli.utils` builds an authenticated client from the saved profile.
+- **Source status values, observed:** `2` = ready, `3` and `5` = failure states. Status is
+  not immediate — a 500 KB source read `5` for over a minute before settling at `2`, so
+  readiness polling must not treat a transient non-2 as failure. Judge only after the
+  source stops changing or a timeout expires.
+- Google Docs conversion is now irrelevant: no BOM loss, no 1.02M-character ceiling, and
+  no fidelity question, because the bytes are never transformed.
