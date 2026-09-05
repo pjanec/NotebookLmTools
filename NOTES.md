@@ -176,3 +176,25 @@ are to add the non-sensitive `userinfo.email` scope (needs one re-auth), or to r
 comparison with a functional check — upload a marker file as rclone, then confirm
 NotebookLM can add it as a Drive source, which proves the accounts match and is a stronger
 test than comparing strings. Deferred until `doctor` is implemented.
+
+### 2026-09-05 — where `nlm` keeps its credentials
+
+`nlm login` does **not** use the operator's everyday Chrome profile. It launches Chrome
+with its own profile directory, which starts empty — hence a full Google login the first
+time, even on a machine where Chrome is signed in. `nlm login --clear` wipes that profile,
+and exists so you can switch Google accounts.
+
+Location on this host:
+
+```
+C:\Users\pjane\.notebooklm-mcp-cli\
+    chrome-profiles\      the isolated Chrome profile (cookies live here)
+    profiles\             named auth profiles
+    cache\
+```
+
+Outside the repository, as `docs/design.md` §4.2 assumed. Two consequences worth keeping
+in mind: the session survives across runs so the full login is a one-time cost per machine
+(cookies last roughly 2-4 weeks and refresh from this profile), and this directory is
+credential-bearing, so it must never be copied into the repo or into a backup that gets
+committed.
