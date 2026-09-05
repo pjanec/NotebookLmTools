@@ -207,6 +207,12 @@ COMMANDS: list[Command] = [
                   "CSV, log, plain text); repeatable", metavar="FILE", repeatable=True),
               Arg(("--name",), "slug for the question source title and transcript "
                   "filename", metavar="SLUG"),
+              Arg(("--fresh",), "start a new conversation instead of continuing the "
+                  "notebook's existing one; use when the question must not inherit "
+                  "earlier context", action="store_true"),
+              Arg(("--conversation",), "continue one specific conversation, from a "
+                  "previous ask's conversation_id; this is how you warm the notebook up "
+                  "and then ask the real question in the same thread", metavar="ID"),
               Arg(("--keep",), "do not delete the question and attachment sources",
                   action="store_true"),
               PROJECT, DRIVE_REMOTE, DRIVE_ROOT, CACHE_DIR, *READINESS, *COMMON],

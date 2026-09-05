@@ -280,9 +280,37 @@ class NotebookLM:
 
     # -- querying -----------------------------------------------------------------
 
-    def query(self, notebook_id: str, question: str, *, timeout: float = 300) -> dict:
+    def query(
+        self,
+        notebook_id: str,
+        question: str,
+        *,
+        timeout: float = 300,
+        fresh: bool = False,
+        conversation_id: str | None = None,
+    ) -> dict:
+        """Ask the notebook a question.
+
+        By default this **continues the notebook's existing conversation**, which is
+        deliberate and useful: the architect answers better once warmed up, so a caller
+        can ask how something works and then ask the real question with that context
+        already in play. Follow-ups are the normal case.
+
+        The cost is that a cold question inherits whatever was discussed last -- including
+        chats held in the web UI. When a question must stand alone, pass `fresh=True`.
+        Pass `conversation_id` to continue one specific thread.
+
+        The returned dict carries `conversation_id`, so a caller can deliberately keep a
+        line of questioning together.
+        """
         try:
-            result = self.client.query(notebook_id, question, timeout=timeout)
+            result = self.client.query(
+                notebook_id,
+                question,
+                timeout=timeout,
+                conversation_id=conversation_id,
+                new_conversation=fresh and conversation_id is None,
+            )
         except Exception as error:  # noqa: BLE001
             raise _wrap(error) from error
         if isinstance(result, dict):

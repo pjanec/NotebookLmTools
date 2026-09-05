@@ -120,6 +120,8 @@ def run_ask(
     ready_timeout: float = 1200,
     poll_interval: float = 15,
     query_timeout: float = 300,
+    fresh: bool = False,
+    conversation_id: str | None = None,
 ) -> Envelope:
     envelope = Envelope(action="ask")
     envelope.set(notebook=notebook_title)
@@ -150,6 +152,31 @@ def run_ask(
             )
 
         existing = nlm.list_sources(notebook_id)
+
+        # Clear leftovers from a dead run before asking anything.
+        #
+        # This is not tidiness. A stranded question source is instruction-shaped text
+        # sitting in the corpus, and NotebookLM retrieves it and answers *about it*
+        # instead of about the question asked -- measured: the same query returned an
+        # answer describing the stray source, then the correct answer once it was gone.
+        # Cleanup in `finally` cannot cover a killed process, which is exactly how such a
+        # source survives. Holding the notebook lock means no legitimate ask can be in
+        # flight, so anything matching here is by definition abandoned.
+        orphans = [s for s in existing if naming.is_ask_source(s.title)]
+        if orphans:
+            log.info("clearing %d stranded ask source(s) from a previous run", len(orphans))
+            for orphan in orphans:
+                try:
+                    nlm.delete_source(orphan.id)
+                except ToolError as error:
+                    envelope.warn(f"could not clear stranded source {orphan.title!r}: {error}")
+            envelope.count("orphans_cleared", len(orphans))
+            envelope.warn(
+                f"cleared {len(orphans)} stranded ask source(s) left by an interrupted "
+                "run; they corrupt answers until removed"
+            )
+            existing = nlm.list_sources(notebook_id)
+
         ordinal = naming.next_ask_ordinal([s.title for s in existing])
         envelope.set(ask=f"Q{ordinal}", notebook_id=notebook_id)
         log.info("ask Q%d in %s", ordinal, notebook_title)
@@ -185,8 +212,14 @@ def run_ask(
 
             prompt = build_prompt(question_title, mapping)
             log.info("querying")
-            result = nlm.query(notebook_id, prompt, timeout=query_timeout)
+            result = nlm.query(
+                notebook_id, prompt, timeout=query_timeout,
+                fresh=fresh, conversation_id=conversation_id,
+            )
             answer = result.get("answer", "") or ""
+            # Reported so a caller can deliberately keep a line of questioning together:
+            # warm the architect up, then ask the real question in the same thread.
+            envelope.set(conversation_id=result.get("conversation_id"))
 
             live = [s.title for s in nlm.list_sources(notebook_id)
                     if not naming.is_ask_source(s.title)]

@@ -378,3 +378,44 @@ Rendering the failure report raised `UnicodeEncodeError` on the cp1252 console, 
 the error detail quoted source text. A tool whose most important message is a fidelity
 failure must not crash while printing it. stdout and stderr are now reconfigured to UTF-8
 with `errors="replace"` at startup.
+
+## 2026-09-05 — a stranded ask source hijacks answers
+
+Symptom: a question about entity damage state came back describing MCP servers; later, a
+query asking only for the word MANGO came back as *"The core question posed by
+`Q9-q-probe` is whether..."*.
+
+The cause is not retrieval failure, conversation contamination, or the source-reference
+prompt — all three were suspected and cleared. It is a **stranded `Q<n>-` source**. A
+question source is instruction-shaped text sitting in the corpus; NotebookLM retrieves it
+and answers *about it* rather than about the question asked.
+
+Proof, same notebook, same conversation, one variable:
+
+```
+stranded ask sources found: ['Q1-q-arch-probe3']
+  deleted Q1-q-arch-probe3
+query took 69.2s
+answer: 'MANGO'
+```
+
+Wrong answer with the stray present; correct the moment it was gone.
+
+The strays came from runs killed mid-flight — `finally` does not run on SIGKILL, so the
+one cleanup path the design relied on cannot cover the case that actually happens.
+
+**Fix:** `ask` now clears any `Q<n>-` source *before* asking, as well as after. Holding the
+notebook lock means no legitimate ask can be in flight, so anything found is by definition
+abandoned. The envelope reports `counts.orphans_cleared`, and a non-zero value is a warning
+that a previous run was interrupted. `docs/design.md` §8 already said an abandoned question
+source "pollutes retrieval for every later answer" — that was an understatement, and it is
+now self-healing rather than merely documented.
+
+### Query latency
+
+A query against this notebook (18 sources, 45 MB) takes **65-110 seconds** through the API,
+against "a few seconds" in the web UI. Not caused by anything on our side: the same
+measurement holds for a bare query with no source indirection and no history rebuild. The
+likely explanation is that the web UI streams tokens as they arrive and so *feels*
+immediate, while the API returns only on completion. Worth remembering when budgeting an
+agent's time: an ask is a minute or two, not seconds.

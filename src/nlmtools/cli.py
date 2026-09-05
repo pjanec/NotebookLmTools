@@ -380,6 +380,8 @@ def _run_ask(args: argparse.Namespace) -> Envelope:
         drive=Drive(remote=args.drive_remote, root=args.drive_root),
         ready_timeout=args.ready_timeout,
         poll_interval=args.poll_interval,
+        fresh=args.fresh,
+        conversation_id=args.conversation,
     )
 
 
