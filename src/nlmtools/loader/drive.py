@@ -93,21 +93,36 @@ class Drive:
 
     # -- upload -------------------------------------------------------------------
 
-    def upload(self, files: list[Path], project: str, bundle: str) -> list[DriveFile]:
-        """Copy files into a fresh bundle folder and prove they arrived intact."""
-        target = self.bundle_path(project, bundle)
-        for path in files:
-            self._run(["copyto", str(path), f"{target}/{path.name}"])
+    def upload(
+        self, files: list[Path], project: str, bundle: str, *, transfers: int = 8
+    ) -> list[DriveFile]:
+        """Copy files into a fresh bundle folder and prove they arrived intact.
 
-        self.verify(files, project, bundle)
+        One rclone invocation for the whole set, not one per file: rclone runs
+        `--transfers` uploads concurrently, and a file at a time left most of the link
+        idle. The call returns only when every transfer has finished.
+        """
+        local_dir = files[0].parent
+        include = [arg for path in files for arg in ("--include", path.name)]
+        self._run([
+            "copy", str(local_dir), self.bundle_path(project, bundle),
+            *include,
+            "--transfers", str(transfers),
+            "--checkers", str(transfers),
+        ])
+
+        self.verify(files, project, bundle, transfers=transfers)
         return self.list_bundle_files(project, bundle)
 
-    def verify(self, files: list[Path], project: str, bundle: str) -> None:
+    def verify(
+        self, files: list[Path], project: str, bundle: str, *, transfers: int = 8
+    ) -> None:
         """`rclone check --checksum`: a hash comparison, not a guess. Mismatch is exit 13."""
         local_dir = files[0].parent
         include = [arg for path in files for arg in ("--include", path.name)]
         result = self._run(
-            ["check", str(local_dir), self.bundle_path(project, bundle), "--checksum", *include],
+            ["check", str(local_dir), self.bundle_path(project, bundle), "--checksum",
+             "--checkers", str(transfers), *include],
             check=False,
         )
         if not result.ok:

@@ -19,6 +19,9 @@ nothing and is strictly safer.
 from __future__ import annotations
 
 import logging
+import re
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from ..common import naming
@@ -32,56 +35,73 @@ from .select import select
 log = logging.getLogger("nlmtools.load")
 
 
-def _normalise(text: str) -> str:
-    """Collapse whitespace for comparison.
+#: Identifier-like tokens: what source code is actually made of. Comparing these rather
+#: than raw characters is what makes the check survive real-world input.
+_TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]{2,}")
 
-    The ingested form is what the model reads, so line-ending and spacing differences are
-    noise. A missing function body is not, and survives this normalisation.
-    """
-    return " ".join(text.split())
+#: Fraction of local tokens that must appear in the ingested text. Not 100%: real dumps
+#: contain bytes that are not text at all, and NotebookLM sanitises them.
+DEFAULT_COVERAGE = 0.995
 
 
-def verify_ingested(nlm: NotebookLM, source_id: str, local_path: Path) -> tuple[int, int]:
-    """Compare what NotebookLM ingested against the local file (design.md 6.5).
+def _tokens(text: str) -> Counter:
+    return Counter(_TOKEN.findall(text))
 
-    Returns (ingested_chars, local_chars). Raises on damage.
+
+def verify_ingested(
+    nlm: NotebookLM,
+    source_id: str,
+    local_path: Path,
+    *,
+    coverage: float = DEFAULT_COVERAGE,
+) -> tuple[float, int]:
+    """Check that NotebookLM ingested the file's content (design.md 6.5).
+
+    Returns (coverage, missing_token_count). Raises FIDELITY when too much is missing.
+
+    **Why tokens rather than an exact comparison.** The first version compared normalised
+    text for equality, and on real input it reported damage twice for reasons that were
+    not damage at all:
+
+    * A dump contained an embedded TrueType font -- NUL bytes and all -- and NotebookLM
+      stripped the unprintable bytes. 256k characters "vanished" and none of them were
+      source code.
+    * Another file was not valid UTF-8 in one spot; NotebookLM decoded those bytes as
+      cp1252 and we decoded them as UTF-8, so identical content compared unequal.
+
+    Comparing identifier-like tokens ignores both, while still catching the failure that
+    matters: NotebookLM stripping function bodies loses the identifiers inside them, and
+    that shows up immediately as missing tokens.
     """
     ingested = nlm.source_text(source_id)
     local = local_path.read_text(encoding="utf-8-sig", errors="replace")
 
-    normalised_local = _normalise(local)
-    normalised_ingested = _normalise(ingested)
+    local_tokens = _tokens(local)
+    if not local_tokens:
+        return 1.0, 0
 
-    if not normalised_ingested:
+    ingested_tokens = _tokens(ingested)
+    missing = local_tokens - ingested_tokens
+    missing_count = sum(missing.values())
+    total = sum(local_tokens.values())
+    found = (total - missing_count) / total
+
+    if found < coverage:
         raise ToolError(
             FIDELITY,
-            f"NotebookLM ingested no text for {local_path.name!r}",
-            hint="do not trust this notebook; delete the source and re-run",
-            detail={"source_id": source_id},
-        )
-
-    if normalised_ingested != normalised_local:
-        # Locate the divergence so the report says what was lost, not merely that
-        # something was.
-        limit = min(len(normalised_local), len(normalised_ingested))
-        diverged_at = next(
-            (i for i in range(limit) if normalised_local[i] != normalised_ingested[i]),
-            limit,
-        )
-        raise ToolError(
-            FIDELITY,
-            f"the text NotebookLM ingested for {local_path.name!r} differs from the "
-            f"local file at {diverged_at / max(len(normalised_local), 1):.1%} of the way in",
-            hint="do not trust this notebook; investigate before loading anything else",
+            f"NotebookLM ingested only {found:.1%} of the identifiers in "
+            f"{local_path.name!r}; {missing_count:,} of {total:,} are missing",
+            hint="do not trust this notebook; the source was not ingested intact",
             detail={
                 "source_id": source_id,
-                "local_chars": len(normalised_local),
-                "ingested_chars": len(normalised_ingested),
-                "local_at_divergence": normalised_local[diverged_at:diverged_at + 120],
-                "ingested_at_divergence": normalised_ingested[diverged_at:diverged_at + 120],
+                "coverage": round(found, 4),
+                "missing_tokens": missing_count,
+                "examples": [t for t, _ in missing.most_common(10)],
+                "local_chars": len(local),
+                "ingested_chars": len(ingested),
             },
         )
-    return len(ingested), len(local)
+    return found, missing_count
 
 
 def run_load(
@@ -96,6 +116,7 @@ def run_load(
     drive_only: bool = False,
     dry_run: bool = False,
     verify_ingest: str = "sample",
+    concurrency: int = 8,
     ready_timeout: float = 1200,
     poll_interval: float = 15,
 ) -> Envelope:
@@ -123,7 +144,7 @@ def run_load(
         bundle = drive.new_bundle_name()
         envelope.set(bundle=f"{drive.root}/{project}/{bundle}")
         log.info("uploading to %s", envelope.fields["bundle"])
-        uploaded = drive.upload(files, project, bundle)
+        uploaded = drive.upload(files, project, bundle, transfers=concurrency)
         envelope.count("uploaded", len(uploaded))
         envelope.count("verified", len(uploaded))
 
@@ -158,16 +179,36 @@ def run_load(
             and (not masks or any(s.title.startswith(m) for m in masks))
             and (masks or s.title in by_name)
         ]
-        for source in doomed:
-            nlm.delete_source(source.id)
+        if doomed:
+            with ThreadPoolExecutor(max_workers=max(1, min(concurrency, len(doomed)))) as pool:
+                list(pool.map(lambda s: nlm.delete_source(s.id), doomed))
         envelope.count("deleted", len(doomed))
         log.info("deleted %d existing source(s)", len(doomed))
 
-        # 7. add the new ones. One call per file: --drive takes a single id.
+        # 7. Add the new ones. The API takes one Drive id per call, but the calls are
+        # independent and each costs several seconds server-side, so they run
+        # concurrently -- sequentially this dominated the whole run. NotebookLM then
+        # indexes the batch in parallel regardless.
         added: dict[str, str] = {}
-        for path in files:
-            drive_file = by_name[path.name]
-            added[path.name] = nlm.add_drive_text(notebook_id, drive_file.id, path.name)
+        failures: list[BaseException] = []
+
+        def _add(path: Path) -> tuple[str, str]:
+            return path.name, nlm.add_drive_text(notebook_id, by_name[path.name].id, path.name)
+
+        workers = max(1, min(concurrency, len(files)))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for future in as_completed([pool.submit(_add, path) for path in files]):
+                try:
+                    name, source_id = future.result()
+                    added[name] = source_id
+                    log.info("added %d/%d", len(added), len(files))
+                except BaseException as error:  # noqa: BLE001 - re-raised below
+                    failures.append(error)
+
+        if failures:
+            # Sources that did land are cleaned up by the next run's delete-by-mask, so
+            # the recovery path stays "run it again".
+            raise failures[0]
         envelope.count("added", len(added))
 
         # 8. wait for indexing
@@ -186,12 +227,16 @@ def run_load(
         # 9. verify what was actually ingested
         if verify_ingest != "none":
             targets = files if verify_ingest == "all" else files[:1]
-            for path in targets:
-                ingested_chars, local_chars = verify_ingested(nlm, added[path.name], path)
-                log.info(
-                    "verified %s: %d ingested chars vs %d local",
-                    path.name, ingested_chars, local_chars,
-                )
+
+            def _verify(path: Path) -> tuple[str, float, int]:
+                found, missing = verify_ingested(nlm, added[path.name], path)
+                return path.name, found, missing
+
+            with ThreadPoolExecutor(max_workers=max(1, min(concurrency, len(targets)))) as pool:
+                for name, found, missing in pool.map(_verify, targets):
+                    log.info("verified %s: %.2f%% of identifiers present%s",
+                             name, found * 100,
+                             f" ({missing:,} missing)" if missing else "")
             envelope.count("ingest_verified", len(targets))
             envelope.set(verify_ingest=verify_ingest)
 

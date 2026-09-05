@@ -125,6 +125,10 @@ COMMANDS: list[Command] = [
               MASK, PROJECT, DRIVE_REMOTE, DRIVE_ROOT, CACHE_DIR,
               Arg(("--drive-only",), "stop after upload and checksum verification; do "
                   "not touch the notebook", action="store_true"),
+              Arg(("--concurrency",), "how many sources to register with NotebookLM at "
+                  "once; each call costs several seconds server-side, so doing them one "
+                  "at a time dominates a large batch", metavar="N", default=8,
+                  type="integer"),
               Arg(("--verify-ingest",), "how much of the corpus to read back from "
                   "NotebookLM and compare against the local files: one file, every file, "
                   "or nothing. Body-stripping is systemic, so one file usually proves it",

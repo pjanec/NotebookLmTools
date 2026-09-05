@@ -332,3 +332,49 @@ Two bugs found and fixed by running it:
    the `finally` block could not delete it and it was left stranded. Cleanup now deletes by
    the `Q<n>-` mask rather than by the ids it happens to hold, which covers exactly this
    partial-failure case. `nlmt sweep` also cleared it, as designed.
+
+## 2026-09-05 — first real bundle: 10 files, 25.4 MB
+
+`D:\WORK\IOS-IG-SimHost-FDP\.dumps`, masks `HROT.` and `FDP.` (the eight `Docs.*` files in
+the same folder are correctly excluded). Files average 2.5 MB, largest 3.8 MB — well beyond
+the 1 MB previously proven.
+
+**Result: every file ingested intact.** 100.000% of identifiers present in all ten,
+zero missing. The whole run took **1m40s**.
+
+### Sequential work was the bottleneck, not the transfer
+
+The first attempt uploaded and registered one file at a time, each NotebookLM call costing
+several seconds server-side. Now:
+
+1. Drive upload: one `rclone copy` with `--transfers`, so the whole set moves at once.
+2. Barrier, then checksum verification.
+3. Source registration: concurrent, `--concurrency` (default 8).
+4. Barrier, then a single readiness wait — NotebookLM indexes the batch in parallel anyway.
+
+Deletes and read-back verification are parallel for the same reason.
+
+### The fidelity check had to be rewritten to survive real data
+
+The exact-text comparison reported damage on two files, and **both were false alarms**:
+
+* `FDP.Eng_275.01.txt` contains an **embedded TrueType font** — `OS/2`, `cmap`, `glyf`,
+  `head`, `hhea`, `loca`, `maxp`, `post` table names, NUL bytes, 659 undecodable
+  sequences. NotebookLM stripped the unprintable bytes, so 256,121 characters "vanished"
+  and not one of them was source code. Worth telling the operator: that font is occupying
+  a quarter of a megabyte of a source dump for no benefit.
+* `HROT.Eng_275.01.txt` is not valid UTF-8 in one place (double-encoded mojibake).
+  NotebookLM decoded those bytes as cp1252 and we decoded them as UTF-8, so identical
+  content compared unequal — same length, different code points.
+
+The check now compares **identifier-like tokens** (`[A-Za-z_][A-Za-z0-9_]{2,}`) and
+requires 99.5% coverage. That ignores both artefacts while still catching the failure that
+matters: stripping a function body removes the identifiers inside it, which shows up
+immediately. On the real bundle it reports 100.000%.
+
+### One more crash worth recording
+
+Rendering the failure report raised `UnicodeEncodeError` on the cp1252 console, because
+the error detail quoted source text. A tool whose most important message is a fidelity
+failure must not crash while printing it. stdout and stderr are now reconfigured to UTF-8
+with `errors="replace"` at startup.

@@ -269,6 +269,7 @@ def _run_load(args: argparse.Namespace) -> Envelope:
         drive_only=args.drive_only,
         dry_run=args.dry_run,
         verify_ingest=args.verify_ingest,
+        concurrency=args.concurrency,
         ready_timeout=args.ready_timeout,
         poll_interval=args.poll_interval,
     )
@@ -526,6 +527,17 @@ def _not_implemented(command: spec.Command) -> ToolError:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The console is cp1252 on a default Windows install, and both the envelope and the
+    # error details can carry text lifted straight out of the operator's source files.
+    # Without this, a single non-cp1252 character turns a useful report -- often a
+    # fidelity failure, which is the most important thing this tool ever says -- into a
+    # UnicodeEncodeError traceback.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # not a reconfigurable stream
+            pass
+
     argv = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
 
