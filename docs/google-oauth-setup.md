@@ -1,84 +1,143 @@
 # Creating the Google OAuth client (once, ~10 minutes)
 
-You need this before `setup.ps1` can reach Google Drive. It is a one-time job, and the
-resulting credentials work on any other machine you run these tools on.
+You need this before `setup.ps1` can reach Google Drive. Written from an actual run
+through the console on 2026-09-05, including the parts that waste time.
 
 ## Why this is necessary
 
-Any program that writes to your Drive through the API needs an OAuth **client id**. There
-is no way around it.
+Google needs two separate things to allow API access to your Drive:
 
-Tools that appear to skip this step are lending you *their* registration. rclone did
-exactly that, and is now retiring it: *"rclone's shared Google Drive client_id is being
-retired and will stop working during 2026."* Note what is being retired — the **shared
-client id**, not rclone. rclone remains actively maintained and is what these tools use to
-move files; it simply needs to be given your own credentials rather than borrowing its
-own. Continuing on the shared id only postpones this setup until it breaks mid-run.
+- **Your Google account** — *who* the files belong to. You already have this.
+- **An OAuth client ID** — *which program* is asking. This is the missing piece.
+
+That is what the browser consent screen shows: "**‹app name›** wants access to your Google
+Drive." The app's identity comes from the client ID. You are registering the *tool*, not
+creating a second account or a second Drive.
+
+On its own the client ID grants nothing. Access happens only when you approve it in the
+browser, and the resulting token is the combination of this app + your account + the
+`drive.file` scope.
+
+Tools that appear to skip this step are lending you *their* registration. rclone did that,
+and is retiring it: *"rclone's shared Google Drive client_id is being retired and will stop
+working during 2026."* Note what is retiring — the **shared client id**, not rclone. rclone
+is still what moves the files; it just needs your credentials instead of its own.
 
 ## What this is not
 
-- **It is not a separate Drive.** Files land in your ordinary personal Google Drive,
-  visible and deletable in the web UI exactly as if you had dragged them in.
-- **It is not a service account.** Those own files in their own Drive, which NotebookLM
-  cannot read; the tools sign in as you.
-- **It does not cost anything.** No billing account, no quota purchase.
+- **Not a separate Drive.** Files land in your ordinary personal Google Drive, visible and
+  deletable in the web UI exactly as if you had dragged them in.
+- **Not a service account.** Those are a robot identity with *their own* Drive, so files
+  would land where NotebookLM cannot see them. On the Clients page, do not create one.
+- **Not an API key.** Those cannot access user data at all.
+- **Not billable.** The Drive API is free; no billing account is needed. Only the stored
+  files count against your normal 15 GB account quota.
 
-The Cloud project is a registration slip, nothing more. It owns no files.
+## Where things live in the console
+
+The console was reorganised and most guides on the web are out of date. What used to be
+*APIs & Services → Credentials* is now **Google Auth Platform**, whose left nav has
+*Overview, Branding, Audience, Clients, Data Access, Verification Center*.
 
 ## Steps
 
-1. **Create a project.** Go to <https://console.cloud.google.com/>, open the project
-   picker at the top, and create a new project. Name it anything — `notebooklm-tools`
-   does fine.
+1. **Create a project.** <https://console.cloud.google.com/>, project picker at the top,
+   *New project*. Any name; `notebooklm-tools` does fine.
 
-2. **Enable the Drive API.** *APIs & Services → Library*, search for **Google Drive API**,
-   open it, and click **Enable**.
+2. **Enable the Drive API.** *APIs & Services → Library*, search **Google Drive API**,
+   open it, **Enable**.
 
-3. **Configure the consent screen.** *APIs & Services → OAuth consent screen* (recent
-   console versions call this *Google Auth Platform → Branding*).
-   - User type: **External**.
-   - Fill in the app name, your own email as user support contact, and your own email as
-     developer contact. Nothing else is required.
-   - **Scopes: add nothing.** The scope is requested at run time, and adding it here
-     changes nothing.
+3. **Branding.** App name, your own email as user support contact, your own email as
+   developer contact. That is all.
 
-4. **Publish the app.** On the consent screen (or *Audience*), set the publishing status
-   to **In production**.
+   **Leave "App domain" and "Authorized domains" empty.** Authorized domains are only
+   required if you enter a home page, privacy policy or terms URL — enter none, and there
+   is nothing to authorize.
 
-   Do not skip this. An app left in *Testing* has its **refresh tokens expired by Google
-   after 7 days**, so Drive access would break every week. Publishing normally triggers a
-   verification review, but only for sensitive scopes — `drive.file` is classified
-   non-sensitive precisely because an app can only touch files it created, so there is
-   nothing to review.
+4. **Audience.** User type **External**.
 
-5. **Create the client id.** *APIs & Services → Credentials → Create credentials → OAuth
-   client ID*.
-   - Application type: **Desktop app**.
-   - Name it anything.
-   - Click Create. You are shown a **client ID** and a **client secret**.
+   *Internal* is offered only if the account belongs to a Google Workspace organisation.
+   On a personal `@gmail.com` there is no organisation, so External is forced.
 
-6. **Hand them to the installer**, from the repository root:
+5. **Add yourself as a test user.** *Audience → Test users → Add users*, your own Gmail
+   address.
+
+   **This is the step people miss.** Without it the browser flow fails with `access_denied`
+   even though everything else is correct.
+
+6. **Create the client.** *Clients → Create client → Application type: **Desktop app*** →
+   any name → *Create*. You are shown a **Client ID** and a **Client secret**.
+
+7. **Hand them to the installer**, from the repository root:
 
    ```
    powershell -f setup.ps1 -DriveClientId <the client id> -DriveClientSecret <the secret>
    ```
 
-   A browser opens; approve access for your normal Google account. Both values are stored
-   in Windows Credential Manager, so you only pass them once — later runs are just
-   `powershell -f setup.ps1`.
+   A browser opens. You will see an **"unverified app"** warning — expected for a
+   Testing-status app. Click **Advanced → Go to ‹app name› (unsafe)** and approve.
 
-> **Do not paste the client secret into a chat, a config file, a commit message, or any
-> file in this repository.** Pass it on the command line to `setup.ps1` and let it store
-> the value in Credential Manager. See `CLAUDE.md`.
+   Both values are stored in Windows Credential Manager, so you pass them once. Later runs
+   are just `powershell -f setup.ps1`.
+
+> **Never paste the client secret into a chat, a config file, a commit message, or any file
+> in this repository.** Pass it on the command line and let it go into Credential Manager.
+> See `CLAUDE.md`.
+
+## What to ignore
+
+**"Publishing status: your app's OAuth configuration is incomplete… Please visit the
+Branding page"**, with the publish button greyed out.
+
+Ignore it. Publishing to production is **not required** to create a client or to use the
+API. It is only worth doing to avoid the token expiry below, and for a personal account the
+price is too high: publishing demands a home page and privacy policy URL on a domain you
+own *and* have verified in Search Console. For a single-user tool that is not worth it.
+
+The verification warnings exist because Google reviews apps requesting *sensitive* scopes.
+`drive.file` is non-sensitive — an app can only touch files it created — so there is
+nothing to review, and nothing here needs your attention.
+
+## The cost of staying in Testing
+
+Google expires the refresh token **7 days** after it is issued for an app in Testing
+status. So roughly weekly, a run fails with:
+
+```
+FAILED  load  (DRIVE_AUTH, exit 10)
+  ...
+  -> run setup.ps1 to reauthorize rclone
+```
+
+Recovery is one command and a browser click:
+
+```
+powershell -f setup.ps1
+```
+
+The client ID and secret stay in Credential Manager, so there is nothing to re-type. The
+failure is clean — it happens before anything in the notebook is touched, so no load is
+left half-finished.
 
 ## What the tools can see
 
 The `drive.file` scope grants access **only to files the app itself creates**. It cannot
 read the rest of your Drive. That is why the tools create and own their own folder
-(`/NotebookLmTools/...`) rather than pointing at a folder you made by hand.
+(`/NotebookLmTools/...`) instead of pointing at a folder you made by hand.
 
 ## Moving to another machine
 
 Windows Credential Manager is bound to your Windows account on one machine, so nothing
-sensitive travels. On a new machine, run `setup.ps1` with the same client id and secret
-and approve the browser prompt once. The Cloud project does not need recreating.
+sensitive travels with the repository. On a new machine, run `setup.ps1` with the same
+client ID and secret and approve the browser prompt once. The Cloud project does not need
+recreating — one client serves every machine you use.
+
+## If it goes wrong
+
+| Symptom | Cause |
+|---|---|
+| `access_denied` at the consent screen | you are not in *Audience → Test users* |
+| "unverified app" warning | expected in Testing; *Advanced → Go to ‹app name›* |
+| `DRIVE_AUTH` after about a week | the 7-day Testing token expiry; re-run `setup.ps1` |
+| publish button greyed out | expected and irrelevant; see "What to ignore" |
+| `Drive API has not been used in project…` | step 2 was skipped |
