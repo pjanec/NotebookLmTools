@@ -161,18 +161,17 @@ def run_ask(
         try:
             # Attachments first: they must be present before the question refers to them.
             for index, path in enumerate(attachments, start=1):
-                drive_name = naming.drive_attachment_name(path.name)
+                # The source title must carry the Q<n>- prefix, and for a Drive source
+                # the title is NOT ours to choose: NotebookLM names the source after the
+                # Drive file, ignoring the title argument. So the prefix has to go on the
+                # Drive filename itself, or the attachment ends up unprefixed, invisible
+                # to sweep and to `delete --mask Q<n>-`, and stranded in the corpus.
+                # The `.txt` suffix stays because NotebookLM rejects other types, and the
+                # original name stays visible because 8.3's prompt maps it back.
                 title = naming.attachment_title(ordinal, index, path.name)
                 log.info("attaching %s as %s", path.name, title)
-                uploaded = drive.upload([path], project, drive_bundle)
-                match = next((f for f in uploaded if f.name == path.name), None)
-                if match is None:
-                    raise ToolError(
-                        USAGE,
-                        f"attachment {path.name!r} did not reach Drive",
-                        hint="re-run; check connectivity",
-                    )
-                created.append(nlm.add_drive_text(notebook_id, match.id, title))
+                uploaded = drive.upload_one(path, project, drive_bundle, title)
+                created.append(nlm.add_drive_text(notebook_id, uploaded.id, title))
                 mapping.append((path.name, title))
                 envelope.bump("attachments")
 
@@ -210,13 +209,29 @@ def run_ask(
                 log.info("keeping ask sources; remove later with --mask %s",
                          naming.ask_mask(ordinal))
             else:
-                for source_id in created:
+                # Delete by mask rather than by the ids we happen to hold. A source can
+                # exist server-side while the call that created it reported failure, and
+                # such a source would otherwise be stranded -- which is exactly what
+                # happened the first time this ran. The ordinal prefix is what makes the
+                # sweep exact.
+                mask = naming.ask_mask(ordinal)
+                doomed = {source_id: None for source_id in created}
+                try:
+                    for source in nlm.list_sources(notebook_id):
+                        if source.title.startswith(mask):
+                            doomed[source.id] = None
+                except ToolError as error:
+                    envelope.warn(f"could not enumerate sources for cleanup: {error}")
+
+                for source_id in doomed:
                     try:
                         nlm.delete_source(source_id)
                     except ToolError as error:
                         envelope.warn(f"could not delete a question source: {error}")
                 if attachments:
                     drive.delete_path(project, drive_bundle)
-                envelope.count("cleaned_up", len(created))
+                    # And the container, once the last ask under it is gone.
+                    drive.remove_dir_if_empty(project, "_ask")
+                envelope.count("cleaned_up", len(doomed))
 
     return envelope

@@ -10,6 +10,7 @@ Verification is `rclone check --checksum`, so byte-identity is proven rather tha
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from dataclasses import dataclass
@@ -117,6 +118,54 @@ class Drive:
                 detail={"rclone": result.stderr.strip()[-600:]},
             )
 
+    def upload_one(
+        self, local: Path, project: str, bundle: str, remote_name: str
+    ) -> DriveFile:
+        """Upload a single file under a chosen remote name, and verify it by checksum.
+
+        Used for attachments, which are stored as `<original-name>.txt` so NotebookLM
+        accepts the type while the name the question refers to stays visible. Because the
+        name differs from the local one, `rclone check` cannot pair them; the md5 is
+        compared directly instead.
+        """
+        target = f"{self.bundle_path(project, bundle)}/{remote_name}"
+        self._run(["copyto", str(local), target])
+
+        listed = self._run(["lsjson", "--hash", self.bundle_path(project, bundle)])
+        try:
+            entries = json.loads(listed.stdout or "[]")
+        except ValueError as error:
+            raise ToolError(
+                DRIVE_AUTH,
+                f"could not read the Drive listing: {error}",
+                hint="re-run; if it persists, check connectivity",
+            ) from error
+
+        match = next((e for e in entries if e.get("Name") == remote_name), None)
+        if match is None:
+            raise ToolError(
+                FIDELITY,
+                f"{remote_name!r} is not on Drive after upload",
+                hint="re-run the command",
+            )
+
+        remote_md5 = (match.get("Hashes") or {}).get("md5")
+        local_md5 = hashlib.md5(local.read_bytes()).hexdigest()  # noqa: S324
+        if remote_md5 and remote_md5 != local_md5:
+            raise ToolError(
+                FIDELITY,
+                f"{remote_name!r} does not match the local file after upload",
+                hint="do not proceed; delete it from Drive and re-run",
+                detail={"local_md5": local_md5, "remote_md5": remote_md5},
+            )
+
+        return DriveFile(
+            id=match.get("ID", ""),
+            name=match.get("Name", ""),
+            size=int(match.get("Size", 0) or 0),
+            mime=match.get("MimeType", ""),
+        )
+
     def list_bundle_files(self, project: str, bundle: str) -> list[DriveFile]:
         result = self._run(["lsjson", self.bundle_path(project, bundle)])
         try:
@@ -140,3 +189,12 @@ class Drive:
 
     def delete_path(self, *parts: str) -> None:
         self._run(["purge", self._path(*parts)], check=False)
+
+    def remove_dir_if_empty(self, *parts: str) -> None:
+        """Tidy away a container folder once its last child is gone.
+
+        `rmdir` refuses a non-empty directory, so this is safe to call unconditionally --
+        it removes the leftover `_ask` folder after the final ask is cleaned up, and does
+        nothing while another ask is still in flight.
+        """
+        self._run(["rmdir", self._path(*parts)], check=False)

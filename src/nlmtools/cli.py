@@ -412,6 +412,7 @@ def _run_sweep(args: argparse.Namespace) -> Envelope:
     # Leftover ask folders on Drive are the other half of a stranded ask.
     drive = Drive(remote=args.drive_remote, root=args.drive_root)
     drive.delete_path(args.project, "_ask")
+    drive.remove_dir_if_empty(args.project, "_ask")
     envelope.set(drive_ask_folder_cleared=True)
     return envelope
 

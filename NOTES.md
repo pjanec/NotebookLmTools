@@ -291,3 +291,44 @@ to account for re-authentication mid-batch rather than assuming a stable session
 Worth noting the failure was legible: `status` and `doctor` both reported
 `NLM_AUTH, exit 11` with the hint "run 'nlm login' on this host, then retry", rather than
 surfacing a library traceback. That is the error mapping from design.md 4.4 working.
+
+### 2026-09-05 — correction: a Drive source's title is NOT ours to set
+
+Recon item 4 was recorded as "settable directly: `source add --title`". That is true for a
+**text** source and false for a **Drive** source: NotebookLM names a Drive source after the
+Drive file and ignores the title argument. It was visible earlier and I misread it — adding
+a Doc with `--title "EngineDoc_as_google_doc"` produced a source titled `Engine_b17_01`.
+
+The consequence surfaced in `ask --keep`: the attachment was uploaded as `metrics.json.txt`
+and became a source titled `metrics.json.txt`, with no `Q<n>-` prefix. So it was invisible
+to `sweep` and to `delete --mask Q1-`, and was stranded in the corpus, where it would have
+quietly polluted every later answer — the exact failure design.md 8 exists to prevent.
+
+**Fix:** the prefix goes on the Drive filename. An attachment is uploaded as
+`Q<n>-a<i>-<original-name>.txt`, so the source title carries the prefix that makes the ask
+one mask. Verified: `Q1-a1-metrics.json.txt` and `Q1-q-keeptest2` both appear, and
+`delete --mask Q1-` removes exactly those two and nothing else.
+
+For the corpus this was never a problem: those files keep their own names on Drive, so the
+source title equals the local filename, which is what the masks already assume.
+
+### `ask` verified end to end (2026-09-05)
+
+A 391-word analytical question with a JSON attachment whose values appear in no source
+file. Answer: 3650 characters, 3 citations, in ~2 minutes.
+
+- Every attachment-only value was used: 4127, 9318, 7756, 2044, the 5000 ms budget, and the
+  `regressed` / `watch` verdicts. So the attachment was ingested and the 8.3 name mapping
+  worked -- the model connected "metrics.json" in the question to the prefixed source.
+- The answer followed the instruction set: four headed sections, the requested table with
+  computed excesses, and the exclusions honoured.
+- Cleanup left the notebook exactly as it was found.
+
+Two bugs found and fixed by running it:
+
+1. The attachment was uploaded under its own name rather than with `.txt` appended, so
+   NotebookLM rejected it (`API error (code 9)`).
+2. When that add failed, the source existed server-side but its id was never returned, so
+   the `finally` block could not delete it and it was left stranded. Cleanup now deletes by
+   the `Q<n>-` mask rather than by the ids it happens to hold, which covers exactly this
+   partial-failure case. `nlmt sweep` also cleared it, as designed.
