@@ -55,6 +55,14 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Windows PowerShell 5.1 -- the shell `powershell -f setup.ps1` runs -- does not enable
+# TLS 1.2 by default, which makes every HTTPS download here fail with an unhelpful
+# "underlying connection was closed". Harmless on PowerShell 7.
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch { }
+
 $Root       = $PSScriptRoot
 $VenvDir    = Join-Path $Root '.venv'
 $VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
@@ -145,6 +153,20 @@ function Find-Python {
     $candidates = Get-PythonCandidates
 
     $found = @()
+    # Windows PowerShell 5.1 mangles native arguments that contain quotes or spaces, so
+    # `python -c "<code>"` arrives as a syntax error rather than as code. Writing the
+    # probe to a file sidesteps native argument quoting entirely, and behaves the same
+    # under 5.1 and 7.
+    $probeScript = Join-Path ([System.IO.Path]::GetTempPath()) "nlmt-python-probe-$PID.py"
+    @(
+        'import sys'
+        'print(sys.version_info[0])'
+        'print(sys.version_info[1])'
+        'print(sys.executable)'
+    ) | Set-Content -Path $probeScript -Encoding ascii
+
+    try {
+
     $seen = @{}
     foreach ($candidate in $candidates) {
         $label = (@($candidate.Exe) + @($candidate.Args)) -join ' '
@@ -159,25 +181,26 @@ function Find-Python {
             }
         }
         try {
-            $probe = @($candidate.Args) + @('-c', 'import sys; print("%d.%d" % sys.version_info[:2]); print(sys.executable)')
+            $probe = @($candidate.Args) + @($probeScript)
             $output = & $candidate.Exe @probe 2>$null
-            if ($LASTEXITCODE -ne 0 -or -not $output) {
+            if ($LASTEXITCODE -ne 0 -or -not $output -or $output.Count -lt 3) {
                 $script:PythonProbeLog += "  $label  ($($candidate.Why)): did not run (exit $LASTEXITCODE)"
                 continue
             }
-            $version = [version]$output[0]
+            $version = [version]"$($output[0]).$($output[1])"
+            $output = @($output[2])  # the interpreter path, for the checks below
             if ($version -lt [version]'3.11') {
                 $script:PythonProbeLog += "  $label  ($($candidate.Why)): version $version, too old"
                 continue
             }
-            $script:PythonProbeLog += "  $label  ($($candidate.Why)): Python $version at $($output[1])"
+            $script:PythonProbeLog += "  $label  ($($candidate.Why)): Python $version at $($output[0])"
             $found += [pscustomobject]@{
                 Exe = $candidate.Exe; Args = $candidate.Args
-                Version = $version;   Path = $output[1]
+                Version = $version;   Path = $output[0]
                 # The Microsoft Store build installs under WindowsApps behind an
                 # execution alias. It works, but it redirects file writes and has bitten
                 # enough tooling that a real installation is preferred when one exists.
-                IsStore = $output[1] -like '*\WindowsApps\*'
+                IsStore = $output[0] -like '*\WindowsApps\*'
             }
         } catch {
             $script:PythonProbeLog += "  $label  ($($candidate.Why)): $($_.Exception.Message)"
@@ -185,9 +208,13 @@ function Find-Python {
         }
     }
     if (-not $found) { return $null }
-    $real = $found | Where-Object { -not $_.IsStore }
-    if ($real) { return $real[0] }
-    return $found[0]
+    $real = @($found | Where-Object { -not $_.IsStore })
+    if ($real.Count -gt 0) { return $real[0] }
+    return @($found)[0]
+
+    } finally {
+        Remove-Item $probeScript -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Step 'Locating a Python 3.11 or newer'
@@ -276,6 +303,22 @@ if (-not $RcloneVersion) {
 function Install-Rclone {
     param([string]$Version)
 
+    # Resolve "current" to a concrete version first. The current/ directory publishes no
+    # SHA256SUMS, so downloading from it means installing an unverified binary; the
+    # versioned directory does publish one. Resolving up front means even a first install
+    # is checksum-verified, and the resolved version is what gets pinned.
+    if ($Version -eq 'current') {
+        try {
+            $resolved = (Invoke-WebRequest -Uri 'https://downloads.rclone.org/version.txt' -UseBasicParsing).Content.Trim()
+            if ($resolved -match '(v[\d.]+)') {
+                $Version = $matches[1]
+                Write-Note "resolved current -> rclone $Version"
+            }
+        } catch {
+            Write-Warn2 'could not resolve the current rclone version; falling back to the unversioned download'
+        }
+    }
+
     $slug    = if ($Version -eq 'current') { 'rclone-current-windows-amd64.zip' }
                else { "rclone-$Version-windows-amd64.zip" }
     $baseUrl = if ($Version -eq 'current') { 'https://downloads.rclone.org' }
@@ -294,13 +337,22 @@ function Install-Rclone {
         $expected = $null
         try {
             $sums = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
+            # Windows PowerShell 5.1 hands back a byte array for a content type it does
+            # not consider text; PowerShell 7 hands back a string. Splitting a byte array
+            # into lines matches nothing and fails silently, which is how an unverified
+            # binary would sail through.
+            if ($sums -is [byte[]]) { $sums = [System.Text.Encoding]::UTF8.GetString($sums) }
             foreach ($line in $sums -split "`n") {
                 if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(\S+)\s*$' -and $matches[2] -eq $slug) {
                     $expected = $matches[1].ToLower()
                 }
             }
         } catch {
-            Write-Warn2 "could not fetch $sumsUrl -- proceeding without checksum verification"
+            Write-Warn2 "could not fetch $sumsUrl"
+        }
+        if (-not $expected) {
+            Write-Warn2 'no published checksum available for this download'
+            Write-Note  'the binary is unverified; record this in NOTES.md if it persists'
         }
 
         $actual = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
