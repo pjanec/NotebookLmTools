@@ -98,18 +98,23 @@ that has never read any documentation can still recover.
 
 | File | What it is |
 |---|---|
+| [`docs/bootstrap-new-machine.md`](docs/bootstrap-new-machine.md) | installing and verifying on another machine, end to end |
 | [`docs/design.md`](docs/design.md) | the authoritative specification |
 | [`docs/google-oauth-setup.md`](docs/google-oauth-setup.md) | the one-time Google Cloud step |
 | [`docs/requirements-original-brief.md`](docs/requirements-original-brief.md) | the original brief, frozen; superseded where it differs |
 | [`NOTES.md`](NOTES.md) | running log: what the undocumented API actually does, and why decisions were made |
+| [`docs/ask-the-architect-guide.md`](docs/ask-the-architect-guide.md) | drop-in guidance for a consuming project's `CLAUDE.md` |
 | [`CLAUDE.md`](CLAUDE.md) | rules for agents working in this repository |
 
 ## Development
 
 ```
-.venv\Scripts\python.exe -m pytest tests -q
-nlmt gen-fixtures --out tests\fixtures\small
+.venv\Scripts\python.exe -m pytest tests -q      offline: no network, no credentials
+.venv\Scripts\python.exe tests\live_check.py    end to end against the real account
 ```
+
+Use the venv interpreter. The system Python does not have `notebooklm_tools`
+installed, and tests that touch it will otherwise pass for the wrong reason.
 
 The fixture generator writes files shaped like bundled source code with facts buried
 **inside method bodies**, plus a manifest turning each into a question and its expected
