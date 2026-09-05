@@ -22,6 +22,11 @@ venv/
 # Local output
 answers/
 
-# rclone
+# rclone: the binary is fetched by setup.ps1; the lock file IS committed so
+# another machine installs the same version.
 rclone.conf
-tools/rclone*
+tools/rclone.exe
+tools/*.zip
+
+# Generated test bundles (reproducible from a seed)
+tests/fixtures/

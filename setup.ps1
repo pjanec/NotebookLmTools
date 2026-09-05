@@ -1,0 +1,365 @@
+<#
+.SYNOPSIS
+    Idempotent installer for NotebookLmTools (design.md 10.1).
+
+.DESCRIPTION
+    The sole install path -- nothing in this project is ever installed ad hoc -- and also
+    the transfer mechanism to a new Windows machine. Every step is a no-op when already
+    satisfied, so it is safe to re-run at any time.
+
+        1. locate a Python >= 3.11 (validated, not assumed)
+        2. create .venv if absent
+        3. install pinned dependencies into it
+        4. install the project and notebooklm-mcp-cli into it
+        5. fetch a pinned rclone.exe into tools\ and verify its checksum
+        6. configure the rclone Drive remote, with its config encrypted and the
+           password stored in Windows Credential Manager
+        7. log in to NotebookLM
+        8. run nlmt doctor
+
+    Steps 6 and 7 are the only interactive ones, and only on a first run or after
+    credentials expire.
+
+.PARAMETER SkipLogins
+    Do everything except the two interactive logins. Useful in CI or when you only want
+    to refresh the Python environment.
+
+.PARAMETER RcloneVersion
+    Which rclone to install. Defaults to the version recorded in tools\rclone.lock.json
+    if present -- that is what makes the install reproducible -- otherwise "current",
+    whose resolved version and hash are then written to that lock file.
+
+.PARAMETER Force
+    Rebuild the virtual environment from scratch.
+
+.EXAMPLE
+    .\setup.ps1
+    First-time setup, or a re-run to repair the environment.
+
+.EXAMPLE
+    .\setup.ps1 -SkipLogins
+    Refresh the Python environment without touching credentials.
+#>
+[CmdletBinding()]
+param(
+    [switch]$SkipLogins,
+    [string]$RcloneVersion,
+    [switch]$Force
+)
+
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+
+$Root       = $PSScriptRoot
+$VenvDir    = Join-Path $Root '.venv'
+$VenvPython = Join-Path $VenvDir 'Scripts\python.exe'
+$ToolsDir   = Join-Path $Root 'tools'
+$RcloneExe  = Join-Path $ToolsDir 'rclone.exe'
+$RcloneLock = Join-Path $ToolsDir 'rclone.lock.json'
+$LockFile   = Join-Path $Root 'requirements.lock'
+$RemoteName = 'nlmtools'
+$KeyService = 'NotebookLmTools'
+$KeyAccount = 'rclone-config-password'
+
+function Write-Step  { param($m) Write-Host "`n==> $m" -ForegroundColor Cyan }
+function Write-Ok    { param($m) Write-Host "    ok: $m" -ForegroundColor Green }
+function Write-Note  { param($m) Write-Host "    $m" -ForegroundColor DarkGray }
+function Write-Warn2 { param($m) Write-Host "    warning: $m" -ForegroundColor Yellow }
+function Fail        { param($m, $fix) Write-Host "`nFAILED: $m" -ForegroundColor Red
+                       if ($fix) { Write-Host "     -> $fix" -ForegroundColor Yellow }
+                       exit 1 }
+
+# -- 1. Python ------------------------------------------------------------------------
+
+function Find-Python {
+    # Do not assume a location: this must work on a machine that installed Python
+    # somewhere else entirely.
+    $candidates = @()
+    foreach ($minor in 13, 12, 11) {
+        $candidates += @{ Exe = 'py'; Args = @("-3.$minor") }
+    }
+    $candidates += @{ Exe = 'python'; Args = @() }
+    $candidates += @{ Exe = 'python3'; Args = @() }
+
+    foreach ($candidate in $candidates) {
+        $command = Get-Command $candidate.Exe -ErrorAction SilentlyContinue
+        if (-not $command) { continue }
+        try {
+            $probe = @($candidate.Args) + @('-c', 'import sys; print("%d.%d" % sys.version_info[:2]); print(sys.executable)')
+            $output = & $candidate.Exe @probe 2>$null
+            if ($LASTEXITCODE -ne 0 -or -not $output) { continue }
+            $version = [version]$output[0]
+            if ($version -ge [version]'3.11') {
+                return [pscustomobject]@{
+                    Exe = $candidate.Exe; Args = $candidate.Args
+                    Version = $version;   Path = $output[1]
+                }
+            }
+        } catch { continue }
+    }
+    return $null
+}
+
+Write-Step 'Locating a Python 3.11 or newer'
+$python = Find-Python
+if (-not $python) {
+    Fail 'no Python 3.11+ found on this machine' `
+         'install Python 3.11 or newer from python.org, tick "Add to PATH", then re-run this script'
+}
+Write-Ok "Python $($python.Version) at $($python.Path)"
+
+# -- 2. Virtual environment -----------------------------------------------------------
+
+Write-Step 'Preparing the project virtual environment'
+if ($Force -and (Test-Path $VenvDir)) {
+    Write-Note 'removing the existing .venv (-Force)'
+    Remove-Item -Recurse -Force $VenvDir
+}
+if (-not (Test-Path $VenvPython)) {
+    $venvArgs = @($python.Args) + @('-m', 'venv', $VenvDir)
+    & $python.Exe @venvArgs
+    if ($LASTEXITCODE -ne 0) { Fail 'could not create the virtual environment' 'check disk space and permissions on this folder' }
+    Write-Ok "created $VenvDir"
+} else {
+    Write-Ok 'virtual environment already present'
+}
+
+# The tools get their own environment so they never depend on what is installed
+# system-wide, and so a different machine reproduces the same versions.
+& $VenvPython -m pip install --quiet --upgrade pip setuptools wheel
+if ($LASTEXITCODE -ne 0) { Fail 'could not upgrade pip inside the virtual environment' 'check your network connection or proxy settings' }
+
+# -- 3/4. Dependencies ----------------------------------------------------------------
+
+Write-Step 'Installing dependencies'
+if (Test-Path $LockFile) {
+    Write-Note "installing pinned versions from $(Split-Path $LockFile -Leaf)"
+    & $VenvPython -m pip install --quiet -r $LockFile
+    if ($LASTEXITCODE -ne 0) { Fail 'pinned dependency install failed' "delete $LockFile and re-run to resolve fresh versions" }
+} else {
+    Write-Note 'no lock file yet: resolving current versions, then writing one'
+}
+
+& $VenvPython -m pip install --quiet -e "$Root[dev]"
+if ($LASTEXITCODE -ne 0) { Fail 'could not install the project' 'check the pip output above' }
+
+if (-not (Test-Path $LockFile)) {
+    # Pin whatever was just resolved, so this machine and the next agree.
+    & $VenvPython -m pip freeze --exclude-editable | Set-Content -Path $LockFile -Encoding utf8
+    Write-Ok "wrote $(Split-Path $LockFile -Leaf) -- commit it so other machines match"
+}
+Write-Ok 'python environment ready'
+
+$nlmExe = Join-Path $VenvDir 'Scripts\nlm.exe'
+if (-not (Test-Path $nlmExe)) {
+    Write-Warn2 'the nlm CLI was not found in the venv; notebooklm-mcp-cli may expose a different entry point'
+    Write-Note  'record what it actually installs in NOTES.md (design.md 12, item 6)'
+}
+
+# -- 5. rclone ------------------------------------------------------------------------
+
+Write-Step 'Installing rclone'
+New-Item -ItemType Directory -Force -Path $ToolsDir | Out-Null
+
+if (-not $RcloneVersion) {
+    if (Test-Path $RcloneLock) {
+        $RcloneVersion = (Get-Content $RcloneLock -Raw | ConvertFrom-Json).version
+        Write-Note "pinned to rclone $RcloneVersion by $(Split-Path $RcloneLock -Leaf)"
+    } else {
+        $RcloneVersion = 'current'
+    }
+}
+
+function Install-Rclone {
+    param([string]$Version)
+
+    $slug    = if ($Version -eq 'current') { 'rclone-current-windows-amd64.zip' }
+               else { "rclone-$Version-windows-amd64.zip" }
+    $baseUrl = if ($Version -eq 'current') { 'https://downloads.rclone.org' }
+               else { "https://downloads.rclone.org/$Version" }
+    $zipUrl  = "$baseUrl/$slug"
+    $sumsUrl = "$baseUrl/SHA256SUMS"
+
+    $temp = Join-Path ([System.IO.Path]::GetTempPath()) "rclone-$([guid]::NewGuid().ToString('n'))"
+    New-Item -ItemType Directory -Force -Path $temp | Out-Null
+    try {
+        $zipPath = Join-Path $temp $slug
+        Write-Note "downloading $zipUrl"
+        Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
+
+        # Verify against the checksum file rclone publishes next to the archive.
+        $expected = $null
+        try {
+            $sums = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
+            foreach ($line in $sums -split "`n") {
+                if ($line -match '^\s*([0-9a-fA-F]{64})\s+\*?(\S+)\s*$' -and $matches[2] -eq $slug) {
+                    $expected = $matches[1].ToLower()
+                }
+            }
+        } catch {
+            Write-Warn2 "could not fetch $sumsUrl -- proceeding without checksum verification"
+        }
+
+        $actual = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash.ToLower()
+        if ($expected -and $actual -ne $expected) {
+            Fail "rclone download failed checksum verification (expected $expected, got $actual)" `
+                 'delete tools\rclone.lock.json and re-run; if it recurs, download rclone by hand from rclone.org'
+        }
+        if ($expected) { Write-Ok 'checksum verified against the published SHA256SUMS' }
+
+        Expand-Archive -Path $zipPath -DestinationPath $temp -Force
+        $found = Get-ChildItem -Path $temp -Filter 'rclone.exe' -Recurse | Select-Object -First 1
+        if (-not $found) { Fail 'rclone.exe was not present in the downloaded archive' 'try again, or install rclone manually into tools\' }
+        Copy-Item $found.FullName $RcloneExe -Force
+
+        $resolved = (& $RcloneExe version) | Select-Object -First 1
+        if ($resolved -match 'v([\d.]+)') { $resolvedVersion = "v$($matches[1])" } else { $resolvedVersion = $Version }
+
+        @{
+            version  = $resolvedVersion
+            archive  = $slug
+            sha256   = $actual
+            pinned   = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        } | ConvertTo-Json | Set-Content -Path $RcloneLock -Encoding utf8
+
+        Write-Ok "installed rclone $resolvedVersion (pinned in $(Split-Path $RcloneLock -Leaf))"
+    } finally {
+        Remove-Item -Recurse -Force $temp -ErrorAction SilentlyContinue
+    }
+}
+
+if (Test-Path $RcloneExe) {
+    $installed = (& $RcloneExe version) | Select-Object -First 1
+    Write-Ok "already present: $installed"
+} else {
+    Install-Rclone -Version $RcloneVersion
+}
+
+# -- 6. Drive credentials -------------------------------------------------------------
+
+function Get-StoredPassword {
+    $code = @"
+import keyring
+value = keyring.get_password("$KeyService", "$KeyAccount")
+print(value or "")
+"@
+    $result = & $VenvPython -c $code 2>$null
+    if ($LASTEXITCODE -ne 0) { return '' }
+    return ($result | Out-String).Trim()
+}
+
+function Set-StoredPassword {
+    param([string]$Value)
+    # Passed on stdin, never as a command-line argument: arguments are visible to other
+    # processes and land in shell history.
+    $code = @"
+import sys, keyring
+keyring.set_password("$KeyService", "$KeyAccount", sys.stdin.readline().rstrip("\n"))
+"@
+    $Value | & $VenvPython -c $code
+    if ($LASTEXITCODE -ne 0) { Fail 'could not store the password in Windows Credential Manager' 'check that the keyring package installed correctly' }
+}
+
+Write-Step 'Configuring Google Drive access'
+if ($SkipLogins) {
+    Write-Note 'skipped (-SkipLogins)'
+} else {
+    $password = Get-StoredPassword
+    if (-not $password) {
+        # A random password the operator never has to know or type: it lives in Windows
+        # Credential Manager (DPAPI, bound to this account) and reaches rclone only
+        # through an environment variable on the child process.
+        $bytes = New-Object byte[] 32
+        [System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+        $password = [Convert]::ToBase64String($bytes)
+        Set-StoredPassword -Value $password
+        Write-Ok 'generated an rclone config password and stored it in Windows Credential Manager'
+    } else {
+        Write-Ok 'rclone config password found in Windows Credential Manager'
+    }
+
+    $env:RCLONE_CONFIG_PASS = $password
+    try {
+        $remotes = & $RcloneExe listremotes 2>$null
+        if ($LASTEXITCODE -ne 0) { $remotes = @() }
+
+        if ($remotes -contains "${RemoteName}:") {
+            Write-Ok "rclone remote '$RemoteName' already configured"
+        } else {
+            Write-Host ''
+            Write-Host '    A browser window will open so you can authorize rclone against your' -ForegroundColor Yellow
+            Write-Host '    normal Google account. Nothing is created in Google Cloud, and the' -ForegroundColor Yellow
+            Write-Host '    drive.file scope means rclone can only see files it creates itself.' -ForegroundColor Yellow
+            Write-Host ''
+            & $RcloneExe config create $RemoteName drive scope drive.file
+            if ($LASTEXITCODE -ne 0) {
+                Fail 'rclone Drive authorization did not complete' `
+                     'run: tools\rclone.exe config   and create a "drive" remote named nlmtools with scope drive.file'
+            }
+            Write-Ok "authorized Drive remote '$RemoteName'"
+        }
+
+        # Encrypt the config at rest. The command moved between rclone versions, so probe
+        # rather than assume; an unencrypted config is a finding, not a silent pass.
+        $encryptionHelp = & $RcloneExe config encryption --help 2>&1
+        if ($LASTEXITCODE -eq 0) {
+            $check = & $RcloneExe config encryption check 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                & $RcloneExe config encryption set 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) { Write-Ok 'rclone config encrypted at rest' }
+                else { Write-Warn2 'could not encrypt rclone.conf automatically -- see NOTES.md' }
+            } else {
+                Write-Ok 'rclone config already encrypted'
+            }
+        } else {
+            Write-Warn2 "this rclone build has no 'config encryption' command"
+            Write-Note  'encrypt by hand: tools\rclone.exe config  ->  s) Set configuration password'
+            Write-Note  'then record the version and the working command in NOTES.md'
+        }
+    } finally {
+        Remove-Item Env:\RCLONE_CONFIG_PASS -ErrorAction SilentlyContinue
+    }
+}
+
+# -- 7. NotebookLM credentials --------------------------------------------------------
+
+Write-Step 'Configuring NotebookLM access'
+if ($SkipLogins) {
+    Write-Note 'skipped (-SkipLogins)'
+} elseif (-not (Test-Path $nlmExe)) {
+    Write-Warn2 'nlm.exe not found in the venv; skipping the NotebookLM login'
+} else {
+    & $nlmExe login --check 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Ok 'NotebookLM session is valid'
+    } else {
+        Write-Host ''
+        Write-Host '    A browser will open for the NotebookLM login. Use the SAME Google' -ForegroundColor Yellow
+        Write-Host '    account you just authorized for Drive -- a mismatch causes permission' -ForegroundColor Yellow
+        Write-Host '    errors that only surface much later and make no sense.' -ForegroundColor Yellow
+        Write-Host ''
+        & $nlmExe login
+        if ($LASTEXITCODE -ne 0) { Fail 'nlm login did not complete' 'run: .venv\Scripts\nlm.exe login' }
+        Write-Ok 'logged in to NotebookLM'
+    }
+}
+
+# -- 8. Verify ------------------------------------------------------------------------
+
+Write-Step 'Verifying the installation'
+$nlmt = Join-Path $VenvDir 'Scripts\nlmt.exe'
+if (Test-Path $nlmt) {
+    & $nlmt --version
+    Write-Ok 'nlmt is installed'
+} else {
+    Fail 'nlmt was not installed into the virtual environment' 'check the pip output above'
+}
+
+Write-Host ''
+Write-Host 'Setup complete.' -ForegroundColor Green
+Write-Host ''
+Write-Host '  Activate:  .\.venv\Scripts\Activate.ps1'
+Write-Host '  Learn:     nlmt --ai            (complete reference, written for an agent)'
+Write-Host '             nlmt help workflow   (what these tools do and why)'
+Write-Host '  Check:     nlmt doctor          (confirms both logins are the same account)'
+Write-Host ''
