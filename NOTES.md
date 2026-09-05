@@ -270,3 +270,24 @@ method body 75% of the way through the 1 MB source:
 Still untested: the long-question protocol end to end (`ask`), including attachments and
 cleanup. Its parts are proven individually — a text source added inline ingested intact,
 and query returns citations — but the sequence has not been run.
+
+### 2026-09-05 — NotebookLM cookies expired within ~15 minutes
+
+`nlm login` completed at 13:34 and reported 50 cookies plus a CSRF token for
+`pjanec2@gmail.com`. Loads and queries worked. By roughly 13:50 every NotebookLM call
+returned:
+
+```
+Authentication expired. Run 'nlm login' in your terminal to re-authenticate.
+```
+
+That is far short of the 2-4 weeks the original brief expected, and short enough to matter
+for an unattended run. Possible causes, none yet confirmed: the login was captured while
+the browser session was still settling (the sign-in took over 210 seconds of waiting), the
+Chrome profile was reused between attempts, or Google invalidated the session. Watch
+whether a fresh login lasts longer; if this recurs, the readiness and retry design needs
+to account for re-authentication mid-batch rather than assuming a stable session.
+
+Worth noting the failure was legible: `status` and `doctor` both reported
+`NLM_AUTH, exit 11` with the hint "run 'nlm login' on this host, then retry", rather than
+surfacing a library traceback. That is the error mapping from design.md 4.4 working.

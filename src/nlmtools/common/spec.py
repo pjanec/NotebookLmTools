@@ -188,7 +188,6 @@ COMMANDS: list[Command] = [
             ('type question.md | nlmt ask --notebook "Engine review" --json',
              "pipe the question in and parse the envelope"),
         ],
-        planned_at="M7",
     ),
     Command(
         name="delete",
@@ -225,7 +224,6 @@ COMMANDS: list[Command] = [
             ('nlmt sweep --notebook "Engine review"',
              "remove every stranded question and attachment"),
         ],
-        planned_at="M7",
     ),
     Command(
         name="prune",
@@ -245,7 +243,6 @@ COMMANDS: list[Command] = [
             ("nlmt prune --project engine --keep-last 5",
              "delete all but the five most recent bundles"),
         ],
-        planned_at="M3",
     ),
     Command(
         name="doctor",
@@ -256,9 +253,8 @@ COMMANDS: list[Command] = [
             "the cause of permission errors that otherwise surface much later and make "
             "no sense."
         ),
-        args=[DRIVE_REMOTE, *COMMON],
+        args=[DRIVE_REMOTE, DRIVE_ROOT, *COMMON],
         examples=[("nlmt doctor", "check the environment before a long run")],
-        planned_at="M0",
     ),
     Command(
         name="gen-fixtures",

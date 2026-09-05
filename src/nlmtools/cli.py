@@ -330,6 +330,173 @@ def _run_delete(args: argparse.Namespace) -> Envelope:
     return envelope
 
 
+def _read_question(args: argparse.Namespace) -> str:
+    from pathlib import Path
+
+    if getattr(args, "question", None):
+        return args.question
+    if getattr(args, "question_file", None):
+        return Path(args.question_file).read_text(encoding="utf-8-sig")
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    raise ToolError(
+        exits.USAGE,
+        "no question given",
+        hint="pass --question TEXT, --question-file PATH, or pipe the question on stdin",
+    )
+
+
+def _run_ask(args: argparse.Namespace) -> Envelope:
+    from pathlib import Path
+
+    from .ask.ask import run_ask
+    from .loader.drive import Drive
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else _default_cache_dir()
+    return run_ask(
+        notebook_title=args.notebook,
+        question=_read_question(args),
+        attachments=[Path(a) for a in (args.attach or [])],
+        project=args.project,
+        lock_dir=cache_dir / "locks",
+        answers_dir=Path("answers"),
+        name=args.name,
+        keep=args.keep,
+        drive=Drive(remote=args.drive_remote, root=args.drive_root),
+        ready_timeout=args.ready_timeout,
+        poll_interval=args.poll_interval,
+    )
+
+
+def _run_sweep(args: argparse.Namespace) -> Envelope:
+    from .common import naming
+    from .common.nlm import NotebookLM
+    from .loader.drive import Drive
+
+    envelope = Envelope(action="sweep")
+    nlm = NotebookLM()
+    notebook_id = nlm.find_notebook(args.notebook)
+    envelope.set(notebook=args.notebook, notebook_id=notebook_id)
+    if not notebook_id:
+        raise ToolError(
+            exits.MISMATCH,
+            f"no notebook titled {args.notebook!r}",
+            hint="check the title, or run 'nlmt status'",
+        )
+
+    strays = [s for s in nlm.list_sources(notebook_id) if naming.is_ask_source(s.title)]
+    envelope.set(targets=[s.title for s in strays])
+    if args.dry_run:
+        envelope.set(dry_run=True)
+        envelope.count("would_delete", len(strays))
+        return envelope
+
+    for source in strays:
+        nlm.delete_source(source.id)
+    envelope.count("deleted", len(strays))
+
+    # Leftover ask folders on Drive are the other half of a stranded ask.
+    drive = Drive(remote=args.drive_remote, root=args.drive_root)
+    drive.delete_path(args.project, "_ask")
+    envelope.set(drive_ask_folder_cleared=True)
+    return envelope
+
+
+def _run_prune(args: argparse.Namespace) -> Envelope:
+    from .loader.drive import Drive
+
+    envelope = Envelope(action="prune")
+    drive = Drive(remote=args.drive_remote, root=args.drive_root)
+    bundles = [b for b in drive.list_bundles(args.project) if not b.startswith("_")]
+    keep = max(0, args.keep_last)
+    doomed = bundles[:-keep] if keep else bundles
+
+    envelope.set(project=args.project, bundles=bundles, keeping=bundles[-keep:] if keep else [])
+    envelope.count("bundles", len(bundles))
+    if args.dry_run:
+        envelope.set(dry_run=True, would_delete=doomed)
+        envelope.count("would_delete", len(doomed))
+        return envelope
+
+    for bundle in doomed:
+        drive.delete_bundle(args.project, bundle)
+    envelope.count("deleted", len(doomed))
+    return envelope
+
+
+def _run_doctor(args: argparse.Namespace) -> Envelope:
+    """M0: both credentials work, and they belong to the same Google account."""
+    import json as _json
+    from pathlib import Path
+
+    from .common.nlm import NotebookLM
+    from .loader.drive import Drive
+
+    envelope = Envelope(action="doctor")
+    problems = []
+
+    # Drive: reachability is the honest check. rclone's Drive backend does not support
+    # `config userinfo`, so the account email is not available from this side.
+    try:
+        drive = Drive(remote=args.drive_remote, root=args.drive_root)
+        result = drive._run(["lsd", f"{drive.remote}:", "--max-depth", "1"], check=False)
+        envelope.set(drive_ok=result.ok)
+        if not result.ok:
+            problems.append("Drive is not reachable: " + result.stderr.strip()[-200:])
+    except ToolError as error:
+        envelope.set(drive_ok=False)
+        problems.append(str(error))
+    except Exception as error:  # noqa: BLE001 - doctor reports, never crashes
+        envelope.set(drive_ok=False)
+        problems.append(f"{type(error).__name__}: {error}")
+
+    # NotebookLM: listing notebooks proves the cookies work.
+    try:
+        # Through the wrapper, so a library-specific exception becomes one of our
+        # failure classes instead of escaping as an internal error.
+        nlm = NotebookLM()
+        nlm.find_notebook("__nlmt_doctor_probe__")
+        envelope.set(notebooklm_ok=True)
+    except ToolError as error:
+        envelope.set(notebooklm_ok=False)
+        problems.append(str(error))
+    except Exception as error:  # noqa: BLE001 - doctor reports, never crashes
+        envelope.set(notebooklm_ok=False)
+        problems.append(f"{type(error).__name__}: {error}")
+
+    # The account nlm authenticated as, recorded by `nlm login` in its profile.
+    account = None
+    profile = Path.home() / ".notebooklm-mcp-cli" / "profiles" / "default"
+    for candidate in (profile, profile / "profile.json", profile.with_suffix(".json")):
+        try:
+            if candidate.is_file():
+                data = _json.loads(candidate.read_text(encoding="utf-8"))
+                account = data.get("account") or data.get("email")
+                if account:
+                    break
+        except (OSError, ValueError):
+            continue
+    envelope.set(notebooklm_account=account or "unknown")
+    if not account:
+        envelope.warn(
+            "could not read which Google account nlm is logged in as; "
+            "rclone cannot report its account either, so the identity match is unverified"
+        )
+
+    if problems:
+        drive_broken = not envelope.fields.get("drive_ok")
+        raise ToolError(
+            exits.DRIVE_AUTH if drive_broken else exits.NLM_AUTH,
+            "; ".join(problems),
+            hint=(
+                "run setup.ps1 to reauthorize Google Drive"
+                if drive_broken
+                else "run 'nlm login' on this host, then retry"
+            ),
+        )
+    return envelope
+
+
 def _not_implemented(command: spec.Command) -> ToolError:
     return ToolError(
         exits.INTERNAL,
@@ -413,6 +580,10 @@ def main(argv: list[str] | None = None) -> int:
             "load": _run_load,
             "status": _run_status,
             "delete": _run_delete,
+            "ask": _run_ask,
+            "sweep": _run_sweep,
+            "prune": _run_prune,
+            "doctor": _run_doctor,
         }
         handler = handlers.get(command.name)
         if handler is None:
