@@ -31,3 +31,9 @@ Rules:
 
 Design documents and session-produced notes live in `docs/` and are tracked.
 Current: `docs/notebooklm-bridge-design.md` — the build & test brief for the batch loader.
+
+## Interaction style
+
+**No question widgets.** Never use interactive option pickers, multiple-choice prompts,
+or any other UI widget to ask the operator something. All conversation happens as plain
+chat text: ask the question in prose, and let the operator answer in prose.
