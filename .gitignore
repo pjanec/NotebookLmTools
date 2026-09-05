@@ -1,0 +1,23 @@
+# Secrets — never commit (see CLAUDE.md)
+credentials.json
+token.json
+*.token
+*.pem
+*.key
+.env
+.env.*
+secrets/
+.secrets/
+cookies.txt
+locks/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+
+# Local output
+answers/
