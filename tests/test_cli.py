@@ -150,7 +150,13 @@ def test_bare_help_lists_topics(capsys):
 
 
 def test_unimplemented_commands_say_which_milestone(capsys):
-    cli.main(["load", "--notebook", "X", "--local-folder", ".", "--json"])
+    """A command that is not built yet must name the milestone, not fail obscurely."""
+    planned = [c for c in spec.COMMANDS if c.planned_at]
+    if not planned:
+        pytest.skip("every command is implemented")
+    command = planned[0]
+    required = [f for a in command.args if a.required for f in (a.flags[0], "X")]
+    cli.main([command.name, *required, "--json"])
     parsed = json.loads(capsys.readouterr().out)
-    assert parsed["error"]["detail"]["milestone"] == "M3"
+    assert parsed["error"]["detail"]["milestone"] == command.planned_at
     assert "not implemented" in parsed["error"]["message"]

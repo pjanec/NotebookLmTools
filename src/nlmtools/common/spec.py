@@ -137,7 +137,6 @@ COMMANDS: list[Command] = [
              '--drive-only',
              "upload and verify against Drive without touching the notebook"),
         ],
-        planned_at="M3",
     ),
     Command(
         name="status",
@@ -154,7 +153,6 @@ COMMANDS: list[Command] = [
             ('nlmt status --notebook "Engine review" --json',
              "the same, as a parseable envelope"),
         ],
-        planned_at="M4",
     ),
     Command(
         name="ask",
@@ -213,7 +211,6 @@ COMMANDS: list[Command] = [
             ('nlmt delete --notebook "Engine review" --mask Engine_ --dry-run',
              "list what would be deleted without deleting it"),
         ],
-        planned_at="M4",
     ),
     Command(
         name="sweep",

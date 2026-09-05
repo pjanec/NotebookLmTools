@@ -232,6 +232,104 @@ def _run_gen_fixtures(args: argparse.Namespace) -> Envelope:
     return envelope
 
 
+def _default_cache_dir() -> "Path":
+    from pathlib import Path
+
+    return Path.home() / ".nlmtools"
+
+
+def _run_load(args: argparse.Namespace) -> Envelope:
+    from pathlib import Path
+
+    from .loader.drive import Drive
+    from .loader.load import run_load
+
+    cache_dir = Path(args.cache_dir) if args.cache_dir else _default_cache_dir()
+    return run_load(
+        notebook_title=args.notebook,
+        local_folder=Path(args.local_folder),
+        masks=args.mask,
+        project=args.project,
+        lock_dir=cache_dir / "locks",
+        drive=Drive(remote=args.drive_remote, root=args.drive_root),
+        drive_only=args.drive_only,
+        dry_run=args.dry_run,
+        verify_ingest=args.verify_ingest,
+        ready_timeout=args.ready_timeout,
+        poll_interval=args.poll_interval,
+    )
+
+
+def _run_status(args: argparse.Namespace) -> Envelope:
+    from .common import naming
+    from .common.nlm import NotebookLM
+
+    envelope = Envelope(action="status")
+    nlm = NotebookLM()
+    notebook_id = nlm.find_notebook(args.notebook)
+    envelope.set(notebook=args.notebook, notebook_id=notebook_id, exists=bool(notebook_id))
+    if not notebook_id:
+        envelope.count("sources", 0)
+        return envelope
+
+    sources = nlm.list_sources(notebook_id)
+    masks = list(args.mask or [])
+    matched = [
+        s for s in sources
+        if not naming.is_ask_source(s.title)
+        and (not masks or any(s.title.startswith(m) for m in masks))
+    ]
+    envelope.count("sources", len(sources))
+    envelope.count("matched", len(matched))
+    envelope.count("ask_sources", sum(1 for s in sources if naming.is_ask_source(s.title)))
+    envelope.count("ready", sum(1 for s in sources if s.ready))
+    envelope.count("failed", sum(1 for s in sources if s.failed))
+    envelope.set(
+        all_ready=all(s.ready for s in sources) if sources else True,
+        detail=[{"title": s.title, "status": s.status_name} for s in sources],
+    )
+    return envelope
+
+
+def _run_delete(args: argparse.Namespace) -> Envelope:
+    from .common.nlm import NotebookLM
+
+    envelope = Envelope(action="delete")
+    masks = [m for m in (args.mask or []) if m]
+    if not masks:
+        raise ToolError(
+            exits.USAGE,
+            "at least one --mask is required",
+            hint="pass --mask Q7- to delete one ask, or a corpus prefix; "
+                 "an empty mask never means 'delete everything'",
+        )
+
+    nlm = NotebookLM()
+    notebook_id = nlm.find_notebook(args.notebook)
+    envelope.set(notebook=args.notebook, masks=masks)
+    if not notebook_id:
+        raise ToolError(
+            exits.MISMATCH,
+            f"no notebook titled {args.notebook!r}",
+            hint="check the title, or run 'nlmt status' to list what is there",
+        )
+
+    doomed = [
+        s for s in nlm.list_sources(notebook_id)
+        if any(s.title.startswith(m) for m in masks)
+    ]
+    envelope.set(targets=[s.title for s in doomed])
+    if args.dry_run:
+        envelope.set(dry_run=True)
+        envelope.count("would_delete", len(doomed))
+        return envelope
+
+    for source in doomed:
+        nlm.delete_source(source.id)
+    envelope.count("deleted", len(doomed))
+    return envelope
+
+
 def _not_implemented(command: spec.Command) -> ToolError:
     return ToolError(
         exits.INTERNAL,
@@ -256,6 +354,21 @@ def main(argv: list[str] | None = None) -> int:
         return exits.OK
 
     args = parser.parse_args(argv)
+
+    level = getattr(args, "log_level", None)
+    if level:
+        import logging
+
+        logging.basicConfig(
+            level=getattr(logging, level.upper(), logging.INFO),
+            format="%(message)s",
+            stream=sys.stderr,  # never stdout: that is the envelope's channel
+        )
+        # The HTTP libraries log every request at INFO, which buries our own progress
+        # lines. Keep them for --log-level debug, where they are what you want.
+        if level != "debug":
+            for noisy in ("httpx", "httpcore", "urllib3", "googleapiclient"):
+                logging.getLogger(noisy).setLevel(logging.WARNING)
 
     if args.ai:
         sys.stdout.write(ai_reference())
@@ -295,10 +408,16 @@ def main(argv: list[str] | None = None) -> int:
     as_json = bool(getattr(args, "json", False))
 
     try:
-        if command.name == "gen-fixtures":
-            envelope = _run_gen_fixtures(args)
-        else:
+        handlers = {
+            "gen-fixtures": _run_gen_fixtures,
+            "load": _run_load,
+            "status": _run_status,
+            "delete": _run_delete,
+        }
+        handler = handlers.get(command.name)
+        if handler is None:
             raise _not_implemented(command)
+        envelope = handler(args)
     except ToolError as error:
         envelope.fail(error)
     except KeyboardInterrupt:
