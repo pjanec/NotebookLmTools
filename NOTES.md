@@ -156,3 +156,23 @@ itself is actively maintained and remains the right tool; it just has to be hand
 credentials. That is one argument pair to `config create`, already implemented.
 
 `docs/google-oauth-setup.md` has the console steps.
+
+### 2026-09-05 — Drive authorization succeeded; the installer crashed after it
+
+The OAuth flow completed (`NOTICE: Got code`) and rclone wrote a working `[nlmtools]`
+remote with a token. `rclone lsd nlmtools:` then exits 0 with no output — correct for a
+fresh `drive.file` scope, which can only see files the app created.
+
+The crash was in `Invoke-NativeInteractive`: it deliberately does not capture the
+program's output, so everything rclone wrote to stdout joined the function's **return
+value**. The caller got an array of output lines with the status object buried at the end,
+and `$created.Ok` failed under StrictMode with `PropertyNotFoundStrict`. Fixed by piping
+the program's output to `Out-Host`, which puts it on the console and keeps the return
+value to exactly one object.
+
+Also learned: `rclone config userinfo` is not supported by the Drive backend, so `doctor`
+cannot get the Drive account's email that way. M0 wants both identities compared. Options
+are to add the non-sensitive `userinfo.email` scope (needs one re-auth), or to replace the
+comparison with a functional check — upload a marker file as rclone, then confirm
+NotebookLM can add it as a Drive source, which proves the accounts match and is a stronger
+test than comparing strings. Deferred until `doctor` is implemented.

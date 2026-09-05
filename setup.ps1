@@ -173,7 +173,12 @@ function Invoke-NativeInteractive {
     $previous = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        & $Exe @Arguments
+        # Out-Host, not a bare call: anything the program writes to stdout would otherwise
+        # join this function's return value, so the caller receives an array of output
+        # lines with the status object buried at the end -- and $result.Ok then fails
+        # under StrictMode. Out-Host puts the output on the console where it belongs and
+        # keeps the return value to exactly one object.
+        & $Exe @Arguments | Out-Host
         $code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $previous
