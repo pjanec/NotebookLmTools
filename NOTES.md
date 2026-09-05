@@ -513,3 +513,23 @@ same budget, but accepted is not the same as useful: a fenced inline block compe
 
 A plain question is now a pure query: nothing is created in the notebook, so nothing can be
 stranded. The cost is the query itself, which is why an ask is minutes rather than seconds.
+
+### Session renewal without a browser window (2026-09-05)
+
+Renewing via `nlm login` works unattended but opens a real Chrome window for several
+seconds, stealing focus from whoever is using the machine. On an always-on host running
+loads and asks all day, that is worse than the failure it fixes.
+
+`notebooklm_tools.utils.auth_browser.run_headless_auth` performs the same cookie extraction
+from the same profile with `--headless=new`. Measured: **renewal in 13.2 seconds, nothing
+on screen.**
+
+The tool now uses that, and deliberately does **not** fall back to a visible browser. If
+headless renewal fails the profile's Google session has lapsed, a human must sign in, and
+exit 11 says so — an unattended run would otherwise wait five minutes for someone who is
+not there, and an attended one would be interrupted by an unrequested window.
+
+While making this change an edit deleted the `client` property from the wrapper and **all
+67 tests still passed**; the mistake surfaced part-way through a live run. `tests/
+test_nlm_surface.py` now guards the wrapper's public surface, the `text/plain` constant,
+and the rule that only the error status is terminal — offline, in milliseconds.

@@ -132,16 +132,23 @@ lets failures map onto this project's exit codes (§4.4).
 Authentication still belongs to `nlm`: it holds cookies in its own Chrome profile under
 `~/.notebooklm-mcp-cli/`, outside the repository.
 
-**Sessions are short, and renewal is automatic.** Measured, a session lasts hours rather
-than the weeks the original brief assumed. But `nlm login` on an expired session completes
-**without a human**: it re-extracts cookies from its own still-signed-in Chrome profile,
-which outlives the NotebookLM cookies it issues. So any call failing with `NLM_AUTH`
-triggers one `nlm login`, rebuilds the client and retries.
+**Sessions are short, and renewal is silent.** Measured, a session lasts hours rather than
+the weeks the original brief assumed. Renewal needs no human: the Google session inside
+`nlm`'s Chrome profile outlives the NotebookLM cookies it issues, so the cookies can simply
+be re-extracted. Any call failing with `NLM_AUTH` therefore triggers one renewal, rebuilds
+the client and retries. Measured at ~13 seconds.
 
-That recovery is bounded at 90 seconds and attempted once per process. If the browser
-profile's own Google session has *also* lapsed, `nlm login` waits interactively for a
-human and would otherwise hang an unattended run for its full five-minute timeout; the
-bound turns that into a clean exit 11 instead.
+**No browser window ever appears.** Renewal uses `run_headless_auth`, which drives Chrome
+with `--headless=new`. `nlm login` would do the same extraction but opens a real window for
+several seconds — unacceptable on an always-on host whose operator is working at the
+keyboard while loads and asks run through the day.
+
+If headless renewal fails, the profile's own Google session has lapsed and a human must
+sign in. The tool then stops with exit 11 and says the renewal was already attempted; it
+does **not** fall back to opening a visible browser. An unattended run would otherwise sit
+for five minutes waiting for someone who is not there, and an attended one would be
+interrupted by a window nobody asked for. Deciding to open a browser stays with the
+operator, who runs `nlm login` when it suits them.
 
 ### 4.3 Secret storage
 

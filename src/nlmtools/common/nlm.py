@@ -17,21 +17,15 @@ from __future__ import annotations
 
 import functools
 import logging
-import os
-import subprocess
-import sys
 import time
 from dataclasses import dataclass
-from pathlib import Path
 
 from .exits import AMBIGUOUS, MISMATCH, NLM_AUTH, NLM_QUOTA, NOT_READY, ToolError
 
 log = logging.getLogger("nlmtools.nlm")
 
-#: How long to allow `nlm login` before giving up. It waits interactively for a human when
-#: the browser profile's own Google session has lapsed; we would rather fail with a clear
-#: message than block an unattended run for its full five-minute timeout.
-RELOGIN_TIMEOUT = 90
+#: Seconds allowed for a headless session renewal before giving up.
+RELOGIN_TIMEOUT = 60
 
 #: Re-login attempts per process. More than one means something is wrong that another
 #: attempt will not fix.
@@ -126,7 +120,11 @@ def _reauthing(method):
                 raise
             self._relogins += 1
             if not self._relogin():
-                raise
+                raise ToolError(
+                    NLM_AUTH,
+                    f"{error.message} (renewing the session in the background failed)",
+                    hint="run 'nlm login' on this host to sign in, then retry",
+                ) from error
             self._client = None  # the old client holds the dead cookies
             return method(self, *args, **kwargs)
 
@@ -147,32 +145,6 @@ class NotebookLM:
         self._relogins = 0
         self.reauthenticated = False
 
-    def _nlm_executable(self) -> Path | None:
-        """The `nlm` CLI beside the running interpreter, i.e. inside our own venv."""
-        candidate = Path(sys.executable).parent / ("nlm.exe" if os.name == "nt" else "nlm")
-        return candidate if candidate.exists() else None
-
-    def _relogin(self) -> bool:
-        """Refresh the session. Returns True when it worked."""
-        executable = self._nlm_executable()
-        if executable is None:
-            return False
-        log.info("session expired; re-authenticating")
-        try:
-            completed = subprocess.run(  # noqa: S603 - our own venv's executable
-                [str(executable), "login"],
-                capture_output=True, text=True, timeout=RELOGIN_TIMEOUT,
-                encoding="utf-8", errors="replace",
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            log.warning("re-authentication needs a human; giving up")
-            return False
-        if completed.returncode != 0:
-            return False
-        self.reauthenticated = True
-        log.info("re-authenticated")
-        return True
-
     @property
     def client(self):
         if self._client is None:
@@ -187,6 +159,42 @@ class NotebookLM:
                     hint="run 'nlm login' on this host, then retry",
                 ) from error
         return self._client
+
+    def _relogin(self) -> bool:
+        """Renew the session **without opening a visible browser**.
+
+        `nlm login` works unattended -- it re-extracts cookies from its own still-signed-in
+        Chrome profile -- but it opens a real Chrome window for several seconds, which
+        steals focus from whoever is using the machine. On an always-on host that runs
+        loads and asks throughout the day, that is worse than the failure it fixes.
+
+        `run_headless_auth` does the same extraction with `--headless=new`, so nothing
+        appears on screen. If it fails, the profile's own Google session has most likely
+        lapsed and a human must sign in; we return False and let the caller report exit 11
+        rather than surprising the operator with a window they did not ask for.
+        """
+        try:
+            from notebooklm_tools.utils.auth_browser import run_headless_auth
+            from notebooklm_tools.utils.config import get_config
+
+            profile = self._profile or get_config().auth.default_profile
+        except Exception:  # noqa: BLE001 - library shape is not ours to rely on
+            return False
+
+        log.info("session expired; renewing in the background")
+        try:
+            tokens = run_headless_auth(profile_name=profile, timeout=RELOGIN_TIMEOUT)
+        except Exception as error:  # noqa: BLE001
+            log.debug("headless re-authentication failed: %s", error)
+            return False
+
+        if not tokens:
+            log.info("could not renew the session without a browser; a human must sign in")
+            return False
+
+        self.reauthenticated = True
+        log.info("session renewed")
+        return True
 
     # -- notebooks ----------------------------------------------------------------
 
