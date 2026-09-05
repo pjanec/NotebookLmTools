@@ -81,6 +81,7 @@ function Find-Python {
     $candidates += @{ Exe = 'python'; Args = @() }
     $candidates += @{ Exe = 'python3'; Args = @() }
 
+    $found = @()
     foreach ($candidate in $candidates) {
         $command = Get-Command $candidate.Exe -ErrorAction SilentlyContinue
         if (-not $command) { continue }
@@ -89,15 +90,21 @@ function Find-Python {
             $output = & $candidate.Exe @probe 2>$null
             if ($LASTEXITCODE -ne 0 -or -not $output) { continue }
             $version = [version]$output[0]
-            if ($version -ge [version]'3.11') {
-                return [pscustomobject]@{
-                    Exe = $candidate.Exe; Args = $candidate.Args
-                    Version = $version;   Path = $output[1]
-                }
+            if ($version -lt [version]'3.11') { continue }
+            $found += [pscustomobject]@{
+                Exe = $candidate.Exe; Args = $candidate.Args
+                Version = $version;   Path = $output[1]
+                # The Microsoft Store build installs under WindowsApps behind an
+                # execution alias. It works, but it redirects file writes and has bitten
+                # enough tooling that a real installation is preferred when one exists.
+                IsStore = $output[1] -like '*\WindowsApps\*'
             }
         } catch { continue }
     }
-    return $null
+    if (-not $found) { return $null }
+    $real = $found | Where-Object { -not $_.IsStore }
+    if ($real) { return $real[0] }
+    return $found[0]
 }
 
 Write-Step 'Locating a Python 3.11 or newer'
@@ -107,6 +114,10 @@ if (-not $python) {
          'install Python 3.11 or newer from python.org, tick "Add to PATH", then re-run this script'
 }
 Write-Ok "Python $($python.Version) at $($python.Path)"
+if ($python.IsStore) {
+    Write-Warn2 'this is the Microsoft Store build of Python; it redirects file writes'
+    Write-Note  'if anything behaves oddly, install Python from python.org and re-run with -Force'
+}
 
 # -- 2. Virtual environment -----------------------------------------------------------
 

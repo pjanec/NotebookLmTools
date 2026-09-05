@@ -346,7 +346,8 @@ Deletion is low-stakes by construction: corpus sources are always restorable by 
 10. add every uploaded file as a Drive source          (§6.4)
 11. enumerate; assert one source per file              -> exit 15 on any difference
 12. wait for indexing                                  -> exit 16 on timeout (§7)
-13. release the lock; emit the envelope
+13. verify the ingested text against the local files    -> exit 13 on damage (§6.5)
+14. release the lock; emit the envelope
 ```
 
 Steps 4-6 complete before step 9 touches the notebook: nothing is deleted until the new
@@ -394,9 +395,26 @@ real titles in M4 before this step is trusted.
 source_add(notebook_id, source_type="drive", document_id=<drive file id>, ...)
 ```
 
-Never `source_type="file"` (§1.1). If `source_add` accepts a list of document IDs, load the
-batch in one call, mirroring the web picker; otherwise loop. Which of those applies is a
-recon item (§12).
+Never a local file upload (§1.1). Reconnaissance settled the multi-add question: in `nlm`
+0.10.1, `--url` and `--youtube` are repeatable for bulk but `--drive` takes a single
+document ID, so the batch is added by looping, one call per file.
+
+### 6.5 Verify the ingested text
+
+`nlm source content <source-id>` returns a source's raw text **as NotebookLM ingested it**.
+That is a direct measurement of the property §1.1 exists to protect, so `load` uses it:
+after indexing, pull each source's ingested text back and compare it against the local
+file. Damage is exit 13, and the run says which file and where they diverged.
+
+This is stronger than the smoke question the design originally relied on. A smoke query
+*infers* that function bodies survived from the fact that an answer was correct; this
+*observes* it. The smoke query remains as the readiness fallback (§7.2), not as the
+fidelity evidence.
+
+Comparison is on normalised text, not bytes: the ingested form is what the model reads, so
+line-ending and trailing-whitespace differences are noise, while a missing function body is
+exactly what must be caught. The check therefore compares non-whitespace content, and
+reports the first divergence with enough context to see what was lost.
 
 ---
 
@@ -646,16 +664,21 @@ Locks are per notebook, so different notebooks can be loaded in parallel.
 To be answered against the **installed** `nlm` before §6 and §7 are finalised, and recorded
 in `NOTES.md`. Where the installed tool contradicts this document, the tool wins.
 
-1. Does `source_add` accept **multiple** document IDs in one call (§6.4)?
-2. Does source enumeration expose an **index/processing status** (§7.1)? If not, §7.2 is
-   the readiness signal.
-3. Does `source_add` with `source_type="drive"` accept a **plain `.txt`** Drive file, or
-   only native Google Docs? This is the load-bearing assumption of §1.2. The operator's
-   manual workflow says yes; confirm it in M1 before building on it.
-4. What exactly is a source's **title** derived from — does the `.txt` extension survive?
-   (§6.3's matcher depends on it.)
-5. Is enumeration **paginated**? If so, page it (§6, step 11).
-6. Which `nlm` version is this all verified against?
+Answered against `nlm` 0.10.1 on 2026-09-05; full detail in `NOTES.md`.
+
+1. ~~Multiple document IDs in one call?~~ **No.** `--drive` takes one ID, so `load` loops.
+2. ~~Index status exposed?~~ **Partly:** `source add --wait` blocks until processing
+   completes. Whether enumeration also carries a state field is still open.
+3. **Does `--drive` accept a plain `.txt` Drive file? Still open, and the one risk that
+   matters.** `--type` offers only `doc, slides, sheets, pdf` — no plain-text type. The
+   operator's manual workflow proves the *web picker* accepts a `.txt` from Drive, but
+   that is not the same code path. This is the load-bearing assumption of §1.2 and the
+   first thing M3/M4 must settle; nothing else should be built on top of it. §6.5 is the
+   defence against the dangerous outcome, where the file is accepted but ingested lossily.
+4. ~~What is a title derived from?~~ **We set it:** `source add --title` takes the title
+   directly, so §6.3's matcher is safe.
+5. Is enumeration **paginated**? Not documented as such; confirm live and page it if so.
+6. ~~Which `nlm` version?~~ **0.10.1.**
 
 ---
 

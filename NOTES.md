@@ -4,27 +4,81 @@ Running log: undocumented-API surprises, contradictions with the design, measure
 and decisions made while building. Where the installed `nlm` contradicts `docs/design.md`,
 **the installed tool wins** — record it here and adjust the design.
 
-Newest entries at the bottom of each section.
-
 ## Environment
 
 | Item | Value | When |
 |---|---|---|
 | Host | Windows 11 Home 10.0.26200 | 2026-09-05 |
-| Python (system) | 3.13.5 at `C:\Python313` | 2026-09-05 |
-| `nlm` version | *not yet installed* | — |
+| Python (system) | 3.13.5 at `C:\Python313`; a Store build also present | 2026-09-05 |
+| Python (project venv) | 3.13, created by `setup.ps1` | 2026-09-05 |
+| `nlm` version | **0.10.1** (`notebooklm-mcp-cli`), reports "latest" | 2026-09-05 |
 | rclone version | *not yet installed* | — |
+
+`py -3.13` resolves to the **Microsoft Store** build under `WindowsApps` on this machine,
+not `C:\Python313`. The Store build redirects file writes, so `setup.ps1` now prefers a
+non-Store interpreter and warns if only the Store one is available.
 
 ## Reconnaissance answers (design.md §12)
 
-| # | Question | Answer | When |
-|---|---|---|---|
-| 1 | Does `source_add` take multiple document IDs? | *open* | |
-| 2 | Does enumeration expose index status? | *open* | |
-| 3 | Does `source_type="drive"` accept a plain `.txt`? | *open* | |
-| 4 | What is a source title derived from; does `.txt` survive? | *open* | |
-| 5 | Is enumeration paginated? | *open* | |
-| 6 | Which `nlm` version is this verified against? | *open* | |
+Against `nlm` 0.10.1, from `nlm --ai` and `--help`. Items marked **LIVE** still need a
+logged-in run to settle.
+
+| # | Question | Answer |
+|---|---|---|
+| 1 | Does `source add` take multiple document IDs? | **No, not for Drive.** `--url` and `--youtube` are explicitly "repeatable for bulk"; `--drive` is a single `<str>`. So the batch is added by looping. |
+| 2 | Does enumeration expose index status? | **Partly.** No status field is documented, but `source add --wait` blocks until processing completes (`--wait-timeout`, default 600s), and `source list --full --json` may carry a state. **LIVE** |
+| 3 | Does `--drive` accept a plain `.txt` Drive file? | **Unknown, and the main open risk.** `--type` accepts only `doc, slides, sheets, pdf` — there is no plain-text type. **LIVE**, and blocking for M3/M4. See "Risks" below. |
+| 4 | What is a source title derived from? | Settable directly: `source add --title`. So titles are ours to choose and the mask matcher is safe. |
+| 5 | Is enumeration paginated? | Not documented as paginated; `--full` returns all columns. **LIVE** |
+| 6 | Which `nlm` version is this verified against? | 0.10.1 |
+
+### The commands this project will drive
+
+```
+nlm notebook list --json
+nlm notebook create "Title"
+nlm notebook query <nb> "question" --json [--source-ids a,b] [--conversation-id <cid>]
+nlm source list <nb> --full --json
+nlm source add <nb> --drive <doc-id> --type doc --title "T" --wait --json
+nlm source add <nb> --text "..."     --title "T" --wait --json
+nlm source content <source-id> --json
+nlm source delete <source-id> --confirm --json
+```
+
+## Surprises and contradictions
+
+- **2026-09-05 — `nlm source content` lets us verify ingestion directly.** It returns a
+  source's raw text *after* NotebookLM ingested it. That is a much stronger check than the
+  smoke question the design planned: instead of inferring "the function bodies survived"
+  from an answer, we can pull the ingested text back and compare it to the local file. The
+  smoke query is now a fallback, not the primary fidelity evidence. Design updated
+  (§6 step 11a, §7.1).
+
+- **2026-09-05 — Drive sources are not obviously import-time copies.** The original brief
+  (§0.1 fact 2) states there is no sync and `source_sync_drive` is irrelevant. But `nlm`
+  0.10.1 has `source list --drive` "with freshness", `source stale <nb>`, and
+  `source sync <nb> --confirm`. So the *tool* believes Drive sources retain a link. This
+  does not change the design — we still refresh by delete-and-add, which works either way
+  — but the brief's fact 2 is at best incomplete. Retest once sources exist. **LIVE**
+
+- **2026-09-05 — `notebook query --source-ids` can scope a query to chosen sources.** Not
+  needed for the current design (an ask deliberately uses the whole corpus as evidence),
+  but it is the escape hatch if attachment-scoped questions are ever wanted.
+
+## Risks
+
+**The plain-`.txt`-on-Drive assumption is not yet proven through the CLI.** `--type` offers
+only `doc, slides, sheets, pdf`. The operator's manual workflow proves NotebookLM's *web
+picker* accepts a `.txt` from Drive, but that is not the same code path. Three outcomes:
+
+1. `--type doc` accepts a `text/plain` Drive file and ingests it verbatim — the design
+   stands as written.
+2. It is rejected outright — a loud failure, easy to detect, and we go back to the operator
+   with the fork rather than silently converting anything.
+3. **The dangerous one:** it is accepted but ingested lossily. `nlm source content` is the
+   defence: compare the ingested text against the local file before trusting anything.
+
+This is the first thing M3/M4 must establish, and no other work should build on top of it.
 
 ## Design decisions
 
@@ -41,13 +95,11 @@ Newest entries at the bottom of each section.
   password lives in Credential Manager (DPAPI) and reaches rclone only through
   `RCLONE_CONFIG_PASS` on the child process. Machine-bound by design; a new machine means
   one re-login. See `docs/design.md` §4.3.
+- **2026-09-05 — Ingested-content verification is now part of `load`.** Prompted by the
+  `nlm source content` discovery above.
 
 ## Observed timings
 
 | Date | Bundle | Files | Size | Upload | Indexing | Total |
 |---|---|---|---|---|---|---|
 | | | | | | | |
-
-## Surprises and contradictions
-
-*(none yet)*
