@@ -208,7 +208,9 @@ argument. **Precedence: command line > config file > built-in default.**
 | `--ready-timeout S` | readiness ceiling (default 1200) |
 | `--poll-interval S` | readiness poll period (default 15) |
 | `--smoke-question Q` / `--smoke-expect S` | fallback readiness probe (§7.2) |
-| `--keep` | (`ask`) do not delete the question source |
+| `--question TEXT` / `--question-file PATH` | (`ask`) the question body; stdin if neither is given |
+| `--attach FILE` | (`ask`) repeatable; a text-like data file the question refers to (§8.2) |
+| `--keep` | (`ask`) do not delete the question and attachment sources |
 | `--log-level LEVEL` | stderr verbosity |
 
 ### 5.3 Output contract
@@ -400,37 +402,103 @@ while the notebook's lock is held.
 
 ## 8. Long questions — `nlmt ask`
 
+A long question is often more than text: it references **attached data files** — a JSON
+export, a CSV, a log extract — that the question asks about. Both the question and its
+attachments are temporary sources, created for one query and removed afterwards.
+
 ```
-1. acquire the notebook lock (not merely check it)
-2. source_add(nb, source_type="text", title="Q-<utc-timestamp>-<slug>",
-              text=<long question body>, wait=True)   -> qid
-3. notebook_query(nb, "Answer the question in source <title>, "
-                      "using the other sources as evidence.")
-4. save the answer
-5. source_delete(nb, source_id=qid, confirm=True)     # in a finally block
-6. release the lock
+ 1. acquire the notebook lock (not merely check it)
+ 2. ask_id = "<utc-timestamp>-<slug>"
+ 3. for each --attach FILE:                                     (§8.2)
+      upload to /NotebookLmTools/<project>/_ask/<ask_id>/<name>.txt
+      verify by checksum                                        -> exit 13 on mismatch
+      source_add(nb, source_type="drive", document_id=<id>,
+                 title="Q-<ask_id>-A<n>-<name>.txt")            -> attachment source
+ 4. source_add(nb, source_type="text", title="Q-<ask_id>-Q",
+               text=<long question body>)                       -> question source
+ 5. wait for every source created in 3 and 4 to finish indexing (§7)  -> exit 16
+ 6. notebook_query(nb, <generated prompt>)                       (§8.3)
+ 7. save the answer
+ 8. delete every source created in 3 and 4, and the _ask/<ask_id>/
+    Drive folder                                     # in a finally block
+ 9. release the lock
 ```
 
-**Questions do not go through Drive.** A question source is added directly as
-`source_type="text"`, and that is correct — it is *not* a violation of §1.1. The rule
-there forbids `source_type="file"`, a **local file upload**, because NotebookLM's file
-ingestion strips function bodies out of source code. A question is prose instructions, has
-no code bodies to lose, and is deleted minutes later. Routing it through Drive would add a
-round-trip and a stray Drive file for nothing. Drive is for the corpus; questions are typed
-straight in.
+### 8.1 The question text bypasses Drive; attachments do not
+
+The **question body** is added directly as `source_type="text"`. That is correct and *not*
+a violation of §1.1: the rule there forbids `source_type="file"`, a **local file upload**,
+because NotebookLM's file ingestion strips function bodies out of source code. A question
+is prose instructions, has no bodies to lose, and is deleted minutes later. Routing it
+through Drive would buy a round-trip and a stray Drive file for nothing.
+
+**Attachments are different and go through Drive, exactly like the corpus.** An attached
+JSON or CSV is *data whose exact content is the point of the question* — a dropped array
+element or a truncated field produces a confidently wrong answer, which is the same silent
+failure mode §1.1 exists to prevent. Attachments therefore take the proven path: Drive,
+plain text, checksum-verified, added as `source_type="drive"`. The cost is one upload and
+one delete; the alternative is trusting an unverified ingestion path with the data the
+answer depends on.
+
+### 8.2 Extension and naming
+
+NotebookLM will not accept arbitrary file types, so an attachment is uploaded with `.txt`
+appended to its **full original filename** — `config.json` becomes `config.json.txt`. The
+bytes are unchanged; only the name gains a suffix. Keeping the original name visible
+matters, because the question body refers to the file by the name the operator or agent
+knows it by.
+
+All ephemeral sources share one `ask_id` and the reserved `Q-` prefix (§3.7):
+
+```
+Q-<ask_id>-Q                        the question body
+Q-<ask_id>-A1-config.json.txt       first attachment
+Q-<ask_id>-A2-metrics.csv.txt       second attachment
+```
+
+One reservation covers everything, so `nlmt sweep` still finds strays with a single rule,
+and mask operations still exclude all of it. The `ask_id` groups one ask's sources so
+cleanup removes exactly those and nothing else.
+
+Attachments must be text-like (JSON, CSV, log, plain text). A binary file is refused with
+exit 19 and a hint; embedding binaries is out of scope.
+
+### 8.3 The generated prompt
+
+The query prompt is generated, not written by the caller, and must **bridge the naming
+gap**: the question body refers to `config.json`, while the notebook knows a source titled
+`Q-<ask_id>-A1-config.json.txt`. Without an explicit mapping the model cannot reliably
+connect the two.
+
+```
+Answer the question in source "Q-<ask_id>-Q".
+The data it refers to is attached as these sources:
+  config.json   -> source "Q-<ask_id>-A1-config.json.txt"
+  metrics.csv   -> source "Q-<ask_id>-A2-metrics.csv.txt"
+Use the other sources in this notebook as evidence.
+```
+
+### 8.4 Notes
 
 - Step 1 **takes** the lock; the brief only had `ask` refuse when one was held, which would
   let a concurrent `load` delete the corpus out from under a running question.
-- Step 5 is in `finally`. An abandoned question source pollutes retrieval for every later
-  answer. `--keep` skips it when debugging; `nlmt sweep` clears strays.
+- Step 5 is a full readiness wait (§7), not merely `wait=True` on the add. Attachments are
+  real sources and must finish indexing before the query, for the same reason a batch must.
+- The question body comes from `--question TEXT`, `--question-file PATH`, or stdin.
+  `--attach FILE` is repeatable.
+- Attachments count against the notebook's source limit while the ask is in flight.
+- Step 8 is in `finally`, and cleans up **both** the notebook sources and the `_ask` Drive
+  folder. An abandoned question or attachment source pollutes retrieval for every later
+  answer in that notebook. `--keep` skips it when debugging; `nlmt sweep` clears strays,
+  deleting `Q-*` sources and leftover `_ask/*` Drive folders alike.
 - Default query budget 120s wall-clock. For heavy questions over a 20-source corpus, use
   `notebook_query_start` + poll `notebook_query_status` rather than raising the sync
   timeout.
-- Answers are written to `answers/<notebook-slug>/<timestamp>-<slug>.md` with the question
-  body, the answer, and the live source list at the time of asking. `answers/` is
-  gitignored — transcripts contain source excerpts.
-- Question sources live in the same notebook as the corpus; a separate notebook cannot see
-  those sources.
+- Answers are written to `answers/<notebook-slug>/<ask_id>.md` with the question body, the
+  list of attachments, the answer, and the live source list at the time of asking.
+  `answers/` is gitignored — transcripts contain source excerpts.
+- Question and attachment sources live in the same notebook as the corpus; a separate
+  notebook cannot see the corpus, so the question could not be answered there.
 - **Chat history caveat:** reloading a bundle breaks citations in older chat sessions that
   pointed at now-deleted sources. Expected, not a bug. Documented in `README.md`.
 
@@ -527,6 +595,7 @@ Locks are per notebook, so different notebooks can be loaded in parallel.
 | §4 lock conflict is exit 14 | exit 17 `LOCKED` | 14 is `AMBIGUOUS`; different condition, different remedy |
 | §4 empty selection has no code | exit 18 `EMPTY_SELECTION` | the brief mandates the refusal and tests it, but never assigned a code |
 | §6 `ask` refuses if the lock is held | `ask` takes the lock | otherwise a concurrent `load` can delete the corpus mid-question |
+| §6 a question is text only | a question may carry `--attach`ed data files, uploaded via Drive as `<name>.txt` (§8) | operator requirement; attachment data is what the answer depends on, so it takes the verified path, not an unproven one |
 | M5 asserts a preserved Drive file ID | dropped | meaningless under folder-per-bundle |
 | M1 uses three real chunks | synthetic generator with a ground-truth manifest | no real data available yet |
 | §2 `uv tool install` | install into the project venv | self-contained and transferable |
@@ -578,9 +647,15 @@ in `tests/test_integration.md`.
   the edited value returns the **new** value. The first half matters as much as the second.
 - **M6 — Second notebook, same bundle.** Load the same local files into a second notebook
   without touching them. Accept only if both notebooks end up correct and independent.
-- **M7 — Long questions.** A ~500+ word analytical question. Accept only if a `Q-` source
-  appears then disappears, the answer addresses the full instruction set rather than
-  summarising, and the notebook is left with exactly its pre-question sources.
+- **M7 — Long questions, with an attachment.** A ~500+ word analytical question plus a
+  `--attach`ed JSON containing values that appear nowhere else, referenced by name from the
+  question body. Accept only if: the `Q-` question and attachment sources appear and then
+  disappear; the `_ask` Drive folder is removed too; the answer addresses the full
+  instruction set rather than summarising; the answer **cites values that could only have
+  come from inside the attachment**, proving it was ingested intact and that the §8.3
+  name mapping worked; and the notebook is left with exactly its pre-question sources.
+  Repeat once with `--keep`, then confirm `nlmt sweep` clears both the sources and the
+  Drive folder.
 - **M8 — Failure modes.**
   - Kill mid-load, rerun: converges, no duplicates, no stale-lock deadlock.
   - Delete the cache, rerun: slower, identical result. If behaviour changes, the cache is

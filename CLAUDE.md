@@ -10,15 +10,16 @@ fixtures, not in `NOTES.md`, not in commit messages.**
 
 This applies to everything this project touches, including:
 
-- Google Drive OAuth: `credentials.json`, `token.json`, client IDs/secrets, refresh tokens
+- Google Drive: the rclone OAuth token and the `rclone.conf` encryption password
 - NotebookLM: browser cookies, `NOTEBOOKLM_COOKIES`, the saved `nlm` browser profile
 - Any bearer token, session cookie, or password pasted into the session by the operator
 
 Rules:
 
-1. Secret material lives **outside the repo**, mode `0600`, referenced from config by
-   **path only**. A config file may contain `token_path = "/home/op/.secrets/token.json"`;
-   it may never contain the token itself.
+1. **Nothing sensitive sits in plaintext on disk.** The rclone token lives in an encrypted
+   `rclone.conf`; its password lives in **Windows Credential Manager** (DPAPI) and reaches
+   rclone only through `RCLONE_CONFIG_PASS` on the child process. Never write it to a file,
+   never log it, never put it in the JSON envelope. See `docs/design.md` §4.3.
 2. Before writing any file, check whether the content carries a secret. If it does, write
    it outside the repo, or redact it (`<REDACTED>`) in the tracked version.
 3. When documenting a procedure, describe *how to obtain* the credential; never paste an
@@ -26,11 +27,6 @@ Rules:
 4. Anything secret-bearing goes in `.gitignore` **before** the file is created, not after.
 5. If a secret does get committed, treat it as leaked: rotate/revoke it, then clean history.
    Do not assume a follow-up commit removing it is sufficient.
-
-## Docs
-
-Design documents and session-produced notes live in `docs/` and are tracked.
-Current: `docs/notebooklm-bridge-design.md` — the build & test brief for the batch loader.
 
 ## Interaction style
 
@@ -52,6 +48,20 @@ directly" — that is the exact failure this project exists to prevent.
 Related: files on Drive stay **plain UTF-8 `text/plain`, byte-identical, BOM preserved**.
 Never convert them to native Google Docs.
 
+Two clarifications, so they are not re-litigated:
+
+- **The question *text* bypasses Drive; attached *data files* do not.** `nlmt ask` adds the
+  question body directly as `source_type="text"` — correct, and not an exception to the
+  rule above, which forbids `source_type="file"` (a local *file upload*). A question is
+  prose with no code bodies to lose, and is deleted minutes later. But an `--attach`ed JSON
+  or CSV **is** the data the answer depends on, so it goes the proven route: uploaded to
+  Drive as `<original-name>.txt`, checksum-verified, added as `source_type="drive"`, then
+  deleted with the question. See `docs/design.md` §8.
+- **The tools must teach themselves.** Help text and error messages are part of the
+  product, not documentation about it: every argument documented with a pasteable example,
+  `nlmt --ai` as a one-shot agent reference, and every error naming its corrective action.
+  See `docs/design.md` §5.5. A behaviour change that does not update help is incomplete.
+
 ## Documents
 
 - `docs/design.md` — **the authoritative spec.** Read this before implementing.
@@ -59,14 +69,3 @@ Never convert them to native Google Docs.
   it differs from the design. Do not edit it.
 - `NOTES.md` — running log of API surprises, timings, and decisions. Where the installed
   `nlm` contradicts the design, the tool wins; record it here.
-
-Two clarifications that follow from that rule, so they are not re-litigated:
-
-- **Question sources bypass Drive.** `nlmt ask` adds the question with
-  `source_type="text"`, directly. That is correct and not an exception to the rule above:
-  what is forbidden is `source_type="file"` (a local *file upload*), because file ingestion
-  strips code bodies. A question is prose and is deleted minutes later.
-- **The tools must teach themselves.** Help text and error messages are part of the
-  product, not documentation about it: every argument documented with a pasteable example,
-  `nlmt --ai` as a one-shot agent reference, and every error naming its corrective action.
-  See `docs/design.md` §5.5. A behaviour change that does not update help is incomplete.
