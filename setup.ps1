@@ -82,6 +82,88 @@ function Fail        { param($m, $fix) Write-Host "`nFAILED: $m" -ForegroundColo
                        if ($fix) { Write-Host "     -> $fix" -ForegroundColor Yellow }
                        exit 1 }
 
+# -- Running external programs --------------------------------------------------------
+#
+# Windows PowerShell 5.1 -- the shell this script is run under -- handles native commands
+# badly in two ways that have each broken this installer once:
+#
+#   * Arguments containing quotes or spaces are re-quoted incorrectly, so an inline
+#     script like `python -c "<code>"` arrives as a syntax error.
+#   * With $ErrorActionPreference = 'Stop', ANY output on stderr becomes a terminating
+#     NativeCommandError -- even a harmless startup notice, and even with 2>$null. Tools
+#     that log to stderr as a matter of course, like rclone, trip this constantly.
+#
+# So every external program is launched through one of these two functions, and never
+# with a bare `&`. Both suspend the stderr-is-fatal behaviour and report the real exit
+# code instead, which is the thing worth branching on.
+
+function Invoke-Native {
+    <#
+        Run a program and capture its output. Returns ExitCode, Output (one string) and
+        Lines. Never throws on a non-zero exit; the caller decides what that means.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [string[]]$Arguments = @(),
+        [string]$StdIn
+    )
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        if ($PSBoundParameters.ContainsKey('StdIn')) {
+            $output = $StdIn | & $Exe @Arguments 2>&1
+        } else {
+            $output = & $Exe @Arguments 2>&1
+        }
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    # Lines that came from stderr arrive wrapped in ErrorRecords, and stringifying those
+    # directly yields "System.Management.Automation.RemoteException" instead of the text.
+    # Since these strings end up in operator-facing failure messages, unwrap them.
+    $lines = @($output | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) {
+            # TargetObject holds the raw stderr line, including when it is empty --
+            # check for null rather than truthiness, or blank lines fall through to
+            # the ErrorRecord's own useless ToString().
+            if ($null -ne $_.TargetObject -and $_.TargetObject -is [string]) {
+                $_.TargetObject
+            } elseif ($_.Exception) {
+                $_.Exception.Message
+            } else { '' }
+        } else { "$_" }
+    })
+    return [pscustomobject]@{
+        ExitCode = $code
+        Lines    = $lines
+        Output   = ($lines -join [Environment]::NewLine)
+        Ok       = ($code -eq 0)
+    }
+}
+
+function Invoke-NativeInteractive {
+    <#
+        Run a program that talks to the operator -- a browser login, a prompt -- letting
+        its output reach the console unchanged. Output must NOT be captured here: rclone
+        and nlm print the URL to visit, and swallowing it would leave the operator staring
+        at a hung script.
+    #>
+    param(
+        [Parameter(Mandatory)][string]$Exe,
+        [string[]]$Arguments = @()
+    )
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Exe @Arguments
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    return [pscustomobject]@{ ExitCode = $code; Ok = ($code -eq 0) }
+}
+
 # -- 1. Python ------------------------------------------------------------------------
 
 $script:PythonProbeLog = @()
@@ -182,13 +264,13 @@ function Find-Python {
         }
         try {
             $probe = @($candidate.Args) + @($probeScript)
-            $output = & $candidate.Exe @probe 2>$null
-            if ($LASTEXITCODE -ne 0 -or -not $output -or $output.Count -lt 3) {
-                $script:PythonProbeLog += "  $label  ($($candidate.Why)): did not run (exit $LASTEXITCODE)"
+            $run = Invoke-Native -Exe $candidate.Exe -Arguments $probe
+            if (-not $run.Ok -or $run.Lines.Count -lt 3) {
+                $script:PythonProbeLog += "  $label  ($($candidate.Why)): did not run (exit $($run.ExitCode)) $($run.Output)"
                 continue
             }
-            $version = [version]"$($output[0]).$($output[1])"
-            $output = @($output[2])  # the interpreter path, for the checks below
+            $version = [version]"$($run.Lines[0]).$($run.Lines[1])"
+            $output = @($run.Lines[2])  # the interpreter path, for the checks below
             if ($version -lt [version]'3.11') {
                 $script:PythonProbeLog += "  $label  ($($candidate.Why)): version $version, too old"
                 continue
@@ -247,8 +329,8 @@ if ($Force -and (Test-Path $VenvDir)) {
 }
 if (-not (Test-Path $VenvPython)) {
     $venvArgs = @($python.Args) + @('-m', 'venv', $VenvDir)
-    & $python.Exe @venvArgs
-    if ($LASTEXITCODE -ne 0) { Fail 'could not create the virtual environment' 'check disk space and permissions on this folder' }
+    $run = Invoke-Native -Exe $python.Exe -Arguments $venvArgs
+    if (-not $run.Ok) { Fail "could not create the virtual environment: $($run.Output)" 'check disk space and permissions on this folder' }
     Write-Ok "created $VenvDir"
 } else {
     Write-Ok 'virtual environment already present'
@@ -256,26 +338,28 @@ if (-not (Test-Path $VenvPython)) {
 
 # The tools get their own environment so they never depend on what is installed
 # system-wide, and so a different machine reproduces the same versions.
-& $VenvPython -m pip install --quiet --upgrade pip setuptools wheel
-if ($LASTEXITCODE -ne 0) { Fail 'could not upgrade pip inside the virtual environment' 'check your network connection or proxy settings' }
+$run = Invoke-Native -Exe $VenvPython -Arguments @('-m','pip','install','--quiet','--upgrade','pip','setuptools','wheel')
+if (-not $run.Ok) { Fail "could not upgrade pip inside the virtual environment: $($run.Output)" 'check your network connection or proxy settings' }
 
 # -- 3/4. Dependencies ----------------------------------------------------------------
 
 Write-Step 'Installing dependencies'
 if (Test-Path $LockFile) {
     Write-Note "installing pinned versions from $(Split-Path $LockFile -Leaf)"
-    & $VenvPython -m pip install --quiet -r $LockFile
-    if ($LASTEXITCODE -ne 0) { Fail 'pinned dependency install failed' "delete $LockFile and re-run to resolve fresh versions" }
+    $run = Invoke-Native -Exe $VenvPython -Arguments @('-m','pip','install','--quiet','-r',$LockFile)
+    if (-not $run.Ok) { Fail "pinned dependency install failed: $($run.Output)" "delete $LockFile and re-run to resolve fresh versions" }
 } else {
     Write-Note 'no lock file yet: resolving current versions, then writing one'
 }
 
-& $VenvPython -m pip install --quiet -e "$Root[dev]"
-if ($LASTEXITCODE -ne 0) { Fail 'could not install the project' 'check the pip output above' }
+$run = Invoke-Native -Exe $VenvPython -Arguments @('-m','pip','install','--quiet','-e',"$Root[dev]")
+if (-not $run.Ok) { Fail "could not install the project: $($run.Output)" 'check the pip output above' }
 
 if (-not (Test-Path $LockFile)) {
     # Pin whatever was just resolved, so this machine and the next agree.
-    & $VenvPython -m pip freeze --exclude-editable | Set-Content -Path $LockFile -Encoding utf8
+    $run = Invoke-Native -Exe $VenvPython -Arguments @('-m','pip','freeze','--exclude-editable')
+    if (-not $run.Ok) { Fail "could not write the dependency lock file: $($run.Output)" 'check the pip output above' }
+    $run.Lines | Set-Content -Path $LockFile -Encoding utf8
     Write-Ok "wrote $(Split-Path $LockFile -Leaf) -- commit it so other machines match"
 }
 Write-Ok 'python environment ready'
@@ -367,7 +451,7 @@ function Install-Rclone {
         if (-not $found) { Fail 'rclone.exe was not present in the downloaded archive' 'try again, or install rclone manually into tools\' }
         Copy-Item $found.FullName $RcloneExe -Force
 
-        $resolved = (& $RcloneExe version) | Select-Object -First 1
+        $resolved = (Invoke-Native -Exe $RcloneExe -Arguments @('version')).Lines | Select-Object -First 1
         if ($resolved -match 'v([\d.]+)') { $resolvedVersion = "v$($matches[1])" } else { $resolvedVersion = $Version }
 
         @{
@@ -384,7 +468,7 @@ function Install-Rclone {
 }
 
 if (Test-Path $RcloneExe) {
-    $installed = (& $RcloneExe version) | Select-Object -First 1
+    $installed = (Invoke-Native -Exe $RcloneExe -Arguments @('version')).Lines | Select-Object -First 1
     Write-Ok "already present: $installed"
 } else {
     Install-Rclone -Version $RcloneVersion
@@ -410,14 +494,14 @@ function Invoke-VenvPython {
     try {
         $Lines | Set-Content -Path $path -Encoding utf8
         if ($PSBoundParameters.ContainsKey('StdIn')) {
-            $output = $StdIn | & $VenvPython $path 2>&1
+            $run = Invoke-Native -Exe $VenvPython -Arguments @($path) -StdIn $StdIn
         } else {
-            $output = & $VenvPython $path 2>&1
+            $run = Invoke-Native -Exe $VenvPython -Arguments @($path)
         }
-        if ($LASTEXITCODE -ne 0 -and -not $IgnoreFailure) {
-            throw "python failed (exit $LASTEXITCODE): $(($output | Out-String).Trim())"
+        if (-not $run.Ok -and -not $IgnoreFailure) {
+            throw "python failed (exit $($run.ExitCode)): $($run.Output)"
         }
-        return ($output | Out-String)
+        return $run.Output
     } finally {
         Remove-Item $path -Force -ErrorAction SilentlyContinue
     }
@@ -472,8 +556,8 @@ if ($SkipLogins) {
 
     $env:RCLONE_CONFIG_PASS = $password
     try {
-        $remotes = & $RcloneExe listremotes 2>$null
-        if ($LASTEXITCODE -ne 0) { $remotes = @() }
+        $listed = Invoke-Native -Exe $RcloneExe -Arguments @('listremotes')
+        $remotes = if ($listed.Ok) { $listed.Lines } else { @() }
 
         if ($remotes -contains "${RemoteName}:") {
             Write-Ok "rclone remote '$RemoteName' already configured"
@@ -483,8 +567,8 @@ if ($SkipLogins) {
             Write-Host '    normal Google account. Nothing is created in Google Cloud, and the' -ForegroundColor Yellow
             Write-Host '    drive.file scope means rclone can only see files it creates itself.' -ForegroundColor Yellow
             Write-Host ''
-            & $RcloneExe config create $RemoteName drive scope drive.file
-            if ($LASTEXITCODE -ne 0) {
+            $created = Invoke-NativeInteractive -Exe $RcloneExe -Arguments @('config','create',$RemoteName,'drive','scope','drive.file')
+            if (-not $created.Ok) {
                 Fail 'rclone Drive authorization did not complete' `
                      'run: tools\rclone.exe config   and create a "drive" remote named nlmtools with scope drive.file'
             }
@@ -493,13 +577,20 @@ if ($SkipLogins) {
 
         # Encrypt the config at rest. The command moved between rclone versions, so probe
         # rather than assume; an unencrypted config is a finding, not a silent pass.
-        $encryptionHelp = & $RcloneExe config encryption --help 2>&1
-        if ($LASTEXITCODE -eq 0) {
-            $check = & $RcloneExe config encryption check 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                & $RcloneExe config encryption set 2>&1 | Out-Null
-                if ($LASTEXITCODE -eq 0) { Write-Ok 'rclone config encrypted at rest' }
-                else { Write-Warn2 'could not encrypt rclone.conf automatically -- see NOTES.md' }
+        $encryptionHelp = Invoke-Native -Exe $RcloneExe -Arguments @('config','encryption','--help')
+        if ($encryptionHelp.Ok) {
+            $check = Invoke-Native -Exe $RcloneExe -Arguments @('config','encryption','check')
+            if (-not $check.Ok) {
+                # Feed the password on stdin as well as through the environment. If this
+                # rclone build prompts for a new password and a confirmation, stdin
+                # answers both; if it takes the password from the environment instead,
+                # the input is simply ignored. Without stdin, a prompt would block
+                # forever against captured output, which is the worst outcome here.
+                $encrypted = Invoke-Native -Exe $RcloneExe `
+                    -Arguments @('config','encryption','set') `
+                    -StdIn "$password`n$password`n"
+                if ($encrypted.Ok) { Write-Ok 'rclone config encrypted at rest' }
+                else { Write-Warn2 "could not encrypt rclone.conf automatically: $($encrypted.Output)" }
             } else {
                 Write-Ok 'rclone config already encrypted'
             }
@@ -521,8 +612,8 @@ if ($SkipLogins) {
 } elseif (-not (Test-Path $nlmExe)) {
     Write-Warn2 'nlm.exe not found in the venv; skipping the NotebookLM login'
 } else {
-    & $nlmExe login --check 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) {
+    $checked = Invoke-Native -Exe $nlmExe -Arguments @('login','--check')
+    if ($checked.Ok) {
         Write-Ok 'NotebookLM session is valid'
     } else {
         Write-Host ''
@@ -530,8 +621,8 @@ if ($SkipLogins) {
         Write-Host '    account you just authorized for Drive -- a mismatch causes permission' -ForegroundColor Yellow
         Write-Host '    errors that only surface much later and make no sense.' -ForegroundColor Yellow
         Write-Host ''
-        & $nlmExe login
-        if ($LASTEXITCODE -ne 0) { Fail 'nlm login did not complete' 'run: .venv\Scripts\nlm.exe login' }
+        $loggedIn = Invoke-NativeInteractive -Exe $nlmExe -Arguments @('login')
+        if (-not $loggedIn.Ok) { Fail 'nlm login did not complete' 'run: .venv\Scripts\nlm.exe login' }
         Write-Ok 'logged in to NotebookLM'
     }
 }
@@ -541,7 +632,7 @@ if ($SkipLogins) {
 Write-Step 'Verifying the installation'
 $nlmt = Join-Path $VenvDir 'Scripts\nlmt.exe'
 if (Test-Path $nlmt) {
-    & $nlmt --version
+    Write-Note (Invoke-Native -Exe $nlmt -Arguments @('--version')).Output.Trim()
     Write-Ok 'nlmt is installed'
 } else {
     Fail 'nlmt was not installed into the virtual environment' 'check the pip output above'
