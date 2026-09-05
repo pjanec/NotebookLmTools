@@ -484,21 +484,28 @@ def _run_doctor(args: argparse.Namespace) -> Envelope:
 
     # The account nlm authenticated as, recorded by `nlm login` in its profile.
     account = None
-    profile = Path.home() / ".notebooklm-mcp-cli" / "profiles" / "default"
-    for candidate in (profile, profile / "profile.json", profile.with_suffix(".json")):
-        try:
-            if candidate.is_file():
-                data = _json.loads(candidate.read_text(encoding="utf-8"))
-                account = data.get("account") or data.get("email")
-                if account:
-                    break
-        except (OSError, ValueError):
-            continue
-    envelope.set(notebooklm_account=account or "unknown")
+    validated = None
+    profile_name = getattr(args, "profile", None) or "default"
+    metadata = (
+        Path.home() / ".notebooklm-mcp-cli" / "profiles" / profile_name / "metadata.json"
+    )
+    try:
+        data = _json.loads(metadata.read_text(encoding="utf-8"))
+        account = data.get("email") or data.get("account")
+        validated = data.get("last_validated")
+    except (OSError, ValueError):
+        pass
+    envelope.set(notebooklm_account=account or "unknown", session_validated=validated)
     if not account:
+        envelope.warn(f"could not read the signed-in account from {metadata}")
+    else:
+        # rclone's Drive backend has no `config userinfo`, so the Drive side cannot report
+        # its account and the two identities cannot be compared directly. A successful
+        # load is the real proof they match: NotebookLM only sees Drive files owned by the
+        # same account.
         envelope.warn(
-            "could not read which Google account nlm is logged in as; "
-            "rclone cannot report its account either, so the identity match is unverified"
+            "Drive cannot report its account, so the identity match is inferred: if a "
+            "load succeeds, both credentials belong to the same Google account"
         )
 
     if problems:

@@ -15,10 +15,27 @@ never mistaken for a Drive one.
 
 from __future__ import annotations
 
+import functools
+import logging
+import os
+import subprocess
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from .exits import AMBIGUOUS, MISMATCH, NLM_AUTH, NLM_QUOTA, NOT_READY, ToolError
+
+log = logging.getLogger("nlmtools.nlm")
+
+#: How long to allow `nlm login` before giving up. It waits interactively for a human when
+#: the browser profile's own Google session has lapsed; we would rather fail with a clear
+#: message than block an unattended run for its full five-minute timeout.
+RELOGIN_TIMEOUT = 90
+
+#: Re-login attempts per process. More than one means something is wrong that another
+#: attempt will not fix.
+MAX_RELOGINS = 1
 
 #: Drive files are uploaded and registered as plain text. Never a Google Docs mime type:
 #: conversion reflows the content, cannot preserve a BOM, and caps near 1.02M characters.
@@ -86,10 +103,75 @@ def _wrap(error: Exception) -> ToolError:
     )
 
 
+def _reauthing(method):
+    """Recover from an expired session by re-authenticating once, then retrying.
+
+    Sessions last hours, not the weeks the brief assumed, so an agent meets `NLM_AUTH`
+    routinely. The recovery is usually unattended: `nlm login` re-extracts cookies from
+    its own Chrome profile, and while that profile's Google session is alive no human is
+    involved -- Chrome opens and closes by itself.
+
+    If the profile's session has also lapsed, `nlm login` waits for a human, we time out,
+    and the original authentication error is raised with its original advice.
+    """
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        try:
+            return method(self, *args, **kwargs)
+        except ToolError as error:
+            if error.code != NLM_AUTH or not self._auto_login:
+                raise
+            if self._relogins >= MAX_RELOGINS:
+                raise
+            self._relogins += 1
+            if not self._relogin():
+                raise
+            self._client = None  # the old client holds the dead cookies
+            return method(self, *args, **kwargs)
+
+    return wrapper
+
+
 class NotebookLM:
-    def __init__(self, client=None, *, profile: str | None = None) -> None:
+    def __init__(
+        self,
+        client=None,
+        *,
+        profile: str | None = None,
+        auto_login: bool = True,
+    ) -> None:
         self._client = client
         self._profile = profile
+        self._auto_login = auto_login and client is None
+        self._relogins = 0
+        self.reauthenticated = False
+
+    def _nlm_executable(self) -> Path | None:
+        """The `nlm` CLI beside the running interpreter, i.e. inside our own venv."""
+        candidate = Path(sys.executable).parent / ("nlm.exe" if os.name == "nt" else "nlm")
+        return candidate if candidate.exists() else None
+
+    def _relogin(self) -> bool:
+        """Refresh the session. Returns True when it worked."""
+        executable = self._nlm_executable()
+        if executable is None:
+            return False
+        log.info("session expired; re-authenticating")
+        try:
+            completed = subprocess.run(  # noqa: S603 - our own venv's executable
+                [str(executable), "login"],
+                capture_output=True, text=True, timeout=RELOGIN_TIMEOUT,
+                encoding="utf-8", errors="replace",
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            log.warning("re-authentication needs a human; giving up")
+            return False
+        if completed.returncode != 0:
+            return False
+        self.reauthenticated = True
+        log.info("re-authenticated")
+        return True
 
     @property
     def client(self):
@@ -108,6 +190,7 @@ class NotebookLM:
 
     # -- notebooks ----------------------------------------------------------------
 
+    @_reauthing
     def find_notebook(self, title: str) -> str | None:
         """Resolve a notebook by exact title.
 
@@ -130,6 +213,7 @@ class NotebookLM:
             )
         return getattr(matches[0], "id", None) if matches else None
 
+    @_reauthing
     def create_notebook(self, title: str) -> str:
         try:
             created = self.client.create_notebook(title)
@@ -144,6 +228,7 @@ class NotebookLM:
             )
         return notebook_id
 
+    @_reauthing
     def delete_notebook(self, notebook_id: str) -> bool:
         try:
             return bool(self.client.delete_notebook(notebook_id))
@@ -152,6 +237,7 @@ class NotebookLM:
 
     # -- sources ------------------------------------------------------------------
 
+    @_reauthing
     def list_sources(self, notebook_id: str) -> list[Source]:
         try:
             raw = self.client.get_notebook_sources_with_types(notebook_id) or []
@@ -168,6 +254,7 @@ class NotebookLM:
             for item in raw
         ]
 
+    @_reauthing
     def add_drive_text(self, notebook_id: str, drive_file_id: str, title: str) -> str:
         """Register a plain-text Drive file as a source.
 
@@ -189,6 +276,7 @@ class NotebookLM:
             )
         return str(source_id)
 
+    @_reauthing
     def add_text(self, notebook_id: str, title: str, text: str) -> str:
         try:
             result = self.client.add_text_source(notebook_id, text, title=title, wait=False)
@@ -203,12 +291,14 @@ class NotebookLM:
             )
         return str(source_id)
 
+    @_reauthing
     def delete_source(self, source_id: str) -> bool:
         try:
             return bool(self.client.delete_source(source_id))
         except Exception as error:  # noqa: BLE001
             raise _wrap(error) from error
 
+    @_reauthing
     def source_text(self, source_id: str) -> str:
         """The text as NotebookLM ingested it -- the evidence for design.md 6.5."""
         try:
@@ -280,6 +370,7 @@ class NotebookLM:
 
     # -- querying -----------------------------------------------------------------
 
+    @_reauthing
     def query(
         self,
         notebook_id: str,

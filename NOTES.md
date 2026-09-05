@@ -442,3 +442,27 @@ normal outcome, not an exception: it means "the architect is unavailable until a
 signs in again", and the agent should carry on with whatever it can do without it rather
 than blocking or looping. Any unattended schedule (a nightly load, say) will fail unless
 someone has signed in recently.
+
+### Re-authentication is automatic (2026-09-05)
+
+Correcting the previous entry. `nlm login` on an expired session **completed with no human
+input**: Chrome opened, re-extracted 52 cookies from its own still-signed-in profile, and
+closed. The Google session in that browser profile long outlives the NotebookLM cookies it
+produces, so a token expiry is recoverable unattended.
+
+`common/nlm.py` now does this itself: any call failing with `NLM_AUTH` triggers one
+`nlm login`, rebuilds the client and retries. Bounded at 90 seconds, because if the browser
+profile's own Google session has *also* lapsed then `nlm login` waits interactively for a
+human and would otherwise hang an unattended run for its full 300s timeout. One attempt per
+process; a second failure will not be fixed by a third try.
+
+This is the difference between an agent that can consult the architect unattended and one
+that needs a human every few hours. Not yet exercised against a real expiry -- the parts
+are verified, but the recovery path itself will first be proven the next time a session
+dies mid-run.
+
+`nlm` records the signed-in account in
+`~/.notebooklm-mcp-cli/profiles/<profile>/metadata.json` (`email`, plus `last_validated`),
+so `doctor` now reports both. The Drive side still cannot report its account, so the
+identity match stays inferred rather than checked: a successful load is the proof, since
+NotebookLM only sees Drive files owned by the same account.
