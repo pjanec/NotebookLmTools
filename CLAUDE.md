@@ -37,3 +37,25 @@ Current: `docs/notebooklm-bridge-design.md` — the build & test brief for the b
 **No question widgets.** Never use interactive option pickers, multiple-choice prompts,
 or any other UI widget to ask the operator something. All conversation happens as plain
 chat text: ask the question in prose, and let the operator answer in prose.
+
+## The rule that must never be improvised away
+
+**A `.txt` is NEVER added to a NotebookLM notebook as a local file upload.**
+Always `source_type="drive"` with a Drive file ID — never `source_type="file"`.
+
+NotebookLM's own text ingestion strips function bodies out of bundled source code, keeping
+only headers and signatures. The failure is silent: the sources are there, the answers read
+fluently, and the code is gutted. Routing through Google Drive is the entire reason Drive is
+in this pipeline. If a shortcut ever looks tempting — "we could just upload the file
+directly" — that is the exact failure this project exists to prevent.
+
+Related: files on Drive stay **plain UTF-8 `text/plain`, byte-identical, BOM preserved**.
+Never convert them to native Google Docs.
+
+## Documents
+
+- `docs/design.md` — **the authoritative spec.** Read this before implementing.
+- `docs/requirements-original-brief.md` — frozen original requirements; superseded where
+  it differs from the design. Do not edit it.
+- `NOTES.md` — running log of API surprises, timings, and decisions. Where the installed
+  `nlm` contradicts the design, the tool wins; record it here.

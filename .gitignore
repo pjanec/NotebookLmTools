@@ -21,3 +21,7 @@ venv/
 
 # Local output
 answers/
+
+# rclone
+rclone.conf
+tools/rclone*
