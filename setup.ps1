@@ -29,6 +29,10 @@
     if present -- that is what makes the install reproducible -- otherwise "current",
     whose resolved version and hash are then written to that lock file.
 
+.PARAMETER PythonExe
+    Full path to the python.exe to build the virtual environment with. Overrides every
+    other candidate. Use it when detection picks the wrong interpreter, or picks none.
+
 .PARAMETER Force
     Rebuild the virtual environment from scratch.
 
@@ -44,6 +48,7 @@
 param(
     [switch]$SkipLogins,
     [string]$RcloneVersion,
+    [string]$PythonExe,
     [switch]$Force
 )
 
@@ -71,26 +76,101 @@ function Fail        { param($m, $fix) Write-Host "`nFAILED: $m" -ForegroundColo
 
 # -- 1. Python ------------------------------------------------------------------------
 
+$script:PythonProbeLog = @()
+
+function Get-PythonCandidates {
+    <#
+        Look in four places, because PATH alone is not reliable: it differs between an
+        elevated prompt, a fresh shell, and whatever launched this script, and on this
+        class of machine it often surfaces the Microsoft Store alias instead of a real
+        installation.
+    #>
+    $candidates = @()
+
+    # 0. An explicit path always wins, so the operator can end any argument about this.
+    if ($PythonExe) {
+        $candidates += @{ Exe = $PythonExe; Args = @(); Why = '-PythonExe' }
+    }
+
+    # 1. The py launcher, which knows about every registered installation.
+    foreach ($minor in 13, 12, 11) {
+        $candidates += @{ Exe = 'py'; Args = @("-3.$minor"); Why = 'py launcher' }
+    }
+
+    # 2. Whatever PATH offers.
+    foreach ($name in 'python', 'python3') {
+        $candidates += @{ Exe = $name; Args = @(); Why = 'PATH' }
+    }
+
+    # 3. The registry, where every proper installer records itself.
+    foreach ($hive in 'HKLM:\SOFTWARE\Python\PythonCore',
+                      'HKLM:\SOFTWARE\WOW6432Node\Python\PythonCore',
+                      'HKCU:\SOFTWARE\Python\PythonCore') {
+        if (-not (Test-Path $hive)) { continue }
+        foreach ($key in Get-ChildItem $hive -ErrorAction SilentlyContinue) {
+            $installPath = Join-Path $key.PSPath 'InstallPath'
+            if (-not (Test-Path $installPath)) { continue }
+            try {
+                $dir = (Get-ItemProperty -Path $installPath -ErrorAction Stop).'(default)'
+                if ($dir) {
+                    $exe = Join-Path $dir 'python.exe'
+                    if (Test-Path $exe) {
+                        $candidates += @{ Exe = $exe; Args = @(); Why = "registry $($key.PSChildName)" }
+                    }
+                }
+            } catch { continue }
+        }
+    }
+
+    # 4. The usual installation directories, in case the registry entry is missing.
+    $roots = @('C:\', $env:LOCALAPPDATA, $env:ProgramFiles, ${env:ProgramFiles(x86)}) |
+             Where-Object { $_ }
+    foreach ($root in $roots) {
+        foreach ($pattern in 'Python3*', 'Programs\Python\Python3*') {
+            $globbed = Join-Path $root $pattern
+            foreach ($dir in (Get-ChildItem -Path $globbed -Directory -ErrorAction SilentlyContinue)) {
+                $exe = Join-Path $dir.FullName 'python.exe'
+                if (Test-Path $exe) {
+                    $candidates += @{ Exe = $exe; Args = @(); Why = 'well-known location' }
+                }
+            }
+        }
+    }
+    return $candidates
+}
+
 function Find-Python {
     # Do not assume a location: this must work on a machine that installed Python
-    # somewhere else entirely.
-    $candidates = @()
-    foreach ($minor in 13, 12, 11) {
-        $candidates += @{ Exe = 'py'; Args = @("-3.$minor") }
-    }
-    $candidates += @{ Exe = 'python'; Args = @() }
-    $candidates += @{ Exe = 'python3'; Args = @() }
+    # somewhere else entirely, and from any shell.
+    $candidates = Get-PythonCandidates
 
     $found = @()
+    $seen = @{}
     foreach ($candidate in $candidates) {
-        $command = Get-Command $candidate.Exe -ErrorAction SilentlyContinue
-        if (-not $command) { continue }
+        $label = (@($candidate.Exe) + @($candidate.Args)) -join ' '
+        if ($seen.ContainsKey($label)) { continue }
+        $seen[$label] = $true
+
+        if (-not (Test-Path $candidate.Exe)) {
+            $command = Get-Command $candidate.Exe -ErrorAction SilentlyContinue
+            if (-not $command) {
+                $script:PythonProbeLog += "  $label  ($($candidate.Why)): not found"
+                continue
+            }
+        }
         try {
             $probe = @($candidate.Args) + @('-c', 'import sys; print("%d.%d" % sys.version_info[:2]); print(sys.executable)')
             $output = & $candidate.Exe @probe 2>$null
-            if ($LASTEXITCODE -ne 0 -or -not $output) { continue }
+            if ($LASTEXITCODE -ne 0 -or -not $output) {
+                $script:PythonProbeLog += "  $label  ($($candidate.Why)): did not run (exit $LASTEXITCODE)"
+                continue
+            }
             $version = [version]$output[0]
-            if ($version -lt [version]'3.11') { continue }
+            if ($version -lt [version]'3.11') {
+                $script:PythonProbeLog += "  $label  ($($candidate.Why)): version $version, too old"
+                continue
+            }
+            $script:PythonProbeLog += "  $label  ($($candidate.Why)): Python $version at $($output[1])"
             $found += [pscustomobject]@{
                 Exe = $candidate.Exe; Args = $candidate.Args
                 Version = $version;   Path = $output[1]
@@ -99,7 +179,10 @@ function Find-Python {
                 # enough tooling that a real installation is preferred when one exists.
                 IsStore = $output[1] -like '*\WindowsApps\*'
             }
-        } catch { continue }
+        } catch {
+            $script:PythonProbeLog += "  $label  ($($candidate.Why)): $($_.Exception.Message)"
+            continue
+        }
     }
     if (-not $found) { return $null }
     $real = $found | Where-Object { -not $_.IsStore }
@@ -110,8 +193,17 @@ function Find-Python {
 Write-Step 'Locating a Python 3.11 or newer'
 $python = Find-Python
 if (-not $python) {
-    Fail 'no Python 3.11+ found on this machine' `
-         'install Python 3.11 or newer from python.org, tick "Add to PATH", then re-run this script'
+    # Never claim Python is absent without showing what was actually tried: on a machine
+    # that plainly has Python, that message is worse than useless.
+    Write-Host ''
+    Write-Host '    Everything that was probed:' -ForegroundColor DarkGray
+    if ($script:PythonProbeLog) {
+        $script:PythonProbeLog | ForEach-Object { Write-Host $_ -ForegroundColor DarkGray }
+    } else {
+        Write-Host '  (nothing -- no candidate was even reachable)' -ForegroundColor DarkGray
+    }
+    Fail 'no usable Python 3.11+ found (see the probe list above)' `
+         'if Python is installed, pass its path: .\setup.ps1 -PythonExe "C:\Python313\python.exe"'
 }
 Write-Ok "Python $($python.Version) at $($python.Path)"
 if ($python.IsStore) {

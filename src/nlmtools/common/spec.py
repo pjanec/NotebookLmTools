@@ -121,6 +121,11 @@ COMMANDS: list[Command] = [
               MASK, PROJECT, DRIVE_REMOTE, DRIVE_ROOT, CACHE_DIR,
               Arg(("--drive-only",), "stop after upload and checksum verification; do "
                   "not touch the notebook", action="store_true"),
+              Arg(("--verify-ingest",), "how much of the corpus to read back from "
+                  "NotebookLM and compare against the local files: one file, every file, "
+                  "or nothing. Body-stripping is systemic, so one file usually proves it",
+                  metavar="MODE", default="sample",
+                  choices=("sample", "all", "none")),
               DRY_RUN, *READINESS, *COMMON],
         examples=[
             ('nlmt load --notebook "Engine review" --local-folder D:\\exports\\engine',

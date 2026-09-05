@@ -403,8 +403,18 @@ document ID, so the batch is added by looping, one call per file.
 
 `nlm source content <source-id>` returns a source's raw text **as NotebookLM ingested it**.
 That is a direct measurement of the property §1.1 exists to protect, so `load` uses it:
-after indexing, pull each source's ingested text back and compare it against the local
-file. Damage is exit 13, and the run says which file and where they diverged.
+pull the ingested text back and compare it against the local file. Damage is exit 13, and
+the run says which file and where they diverged.
+
+**One file, not all of them.** `--verify-ingest` takes `sample` (the default), `all`, or
+`none`. The failure this guards against is **systemic, not per-file**: NotebookLM either
+strips function bodies from this kind of source or it does not. One sampled file detects
+that for about a twentieth of the cost, on a real bundle of ~20 MB where downloading
+everything back would roughly double the run's network traffic for no extra information.
+
+`all` exists for the paranoid case and for a first run against an unfamiliar corpus.
+`none` skips the check entirely — reasonable once the route is well proven, but it is not
+the default, because the whole point of §1.1 is that this failure is silent.
 
 This is stronger than the smoke question the design originally relied on. A smoke query
 *infers* that function bodies survived from the fact that an answer was correct; this
