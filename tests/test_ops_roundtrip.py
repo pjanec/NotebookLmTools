@@ -301,3 +301,39 @@ def test_each_job_is_executed_once_even_when_the_queue_moves(ops, agent):
 
     for job_id in ids:
         assert executions.count(job_id) == 1, f"{job_id} ran {executions.count(job_id)} times"
+
+
+def test_the_answer_travels_back_in_the_result(ops, agent):
+    """A cloud session must be able to read the answer, not just learn that one exists.
+
+    The agent extracts the answer from the transcript it just wrote. When that path was
+    relative it resolved against the agent's working directory, `is_file()` failed, and the
+    result came back with `answer: ""` -- so the caller could see the ask had succeeded and
+    still could not read it. Reported from a live cloud session before it was noticed here.
+    """
+    transcript = agent.config.ops_repo.parent / "answers-test" / "t.md"
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text("# Q1\n\n## Answer\n\nThe answer text.\n", encoding="utf-8")
+
+    def fake_ask(job, project, notebook):
+        text = transcript.read_text(encoding="utf-8")
+        return Result(id=job.id, verb=job.verb, ok=True,
+                      answer=text.split("## Answer", 1)[-1].strip(),
+                      detail={"envelope": {"transcript": str(transcript)}})
+
+    agent.do_ask = fake_ask
+    job_id = submit(ops["cloud"], Job(verb="ask", question="why?", project="alpha"))
+    agent.poll_once()
+
+    result = result_for(ops["cloud"], job_id)
+    assert result["answer"] == "The answer text.", "the caller cannot read the answer"
+
+
+def test_the_transcript_itself_stays_out_of_the_ops_repo(ops, agent, tmp_path):
+    """The answer travels in the result; the file that quotes the sources does not."""
+    from nlmtools.ops.config import ConfigError
+
+    agent.config.answers_dir = agent.config.ops_repo / "answers"
+    with pytest.raises(ConfigError) as caught:
+        agent.config.validate()
+    assert "inside the ops repo" in str(caught.value)

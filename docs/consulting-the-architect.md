@@ -77,6 +77,13 @@ python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project <project> \
 `--attach <file>` adds a text-like data file the question refers to; repeatable. Omit
 `--notebook` to reuse whichever was last used for that project.
 
+**The answer comes back to you.** `client.py` prints it, and it is in the result's `answer`
+field, so a cloud session reads the answer directly and never needs anyone to paste it
+across. A full transcript — question, attachments, answer, and the live source list at the
+time of asking — is also saved on the always-on machine, outside any repository, because it
+quotes proprietary source. That is a record for the operator, not the delivery mechanism:
+**do not go looking for the transcript file; use the answer you were given.**
+
 ### On the machine itself
 
 ```

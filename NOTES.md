@@ -653,3 +653,33 @@ but one `git add -A` from being published. Fixed three ways: `nlmt ask` gained
 `--answers-dir`, the agent passes an absolute path defaulting beside its config, and the
 config refuses an `answers_dir` inside the ops repo. The ops repo also ignores `answers/`
 now, as defence in depth.
+
+## 2026-09-06 — a cloud session could ask but not read the answer
+
+Reported from the first real cloud-VM session. The relay worked -- a `status` probe was
+picked up in ~24s and answered in 4.6s -- but the earlier `ask` came back with
+`answer: ""`, so the session could confirm a question had been answered and still not read
+it. It reasonably read the README rule *"transcripts must never live here"* as meaning this
+was deliberate, and asked for a retrieval verb.
+
+It was not deliberate. The agent extracts the answer from the transcript it has just
+written, and the transcript path in the envelope was **relative** (`answers\...`), so it
+resolved against the agent's working directory, `is_file()` failed, and the answer was
+dropped. The same bug that was putting transcripts inside the ops repo. Fixed when
+`--answers-dir` was added; that run predated the fix.
+
+Verified since: an ask through the queue returns `answer` with 1,722 characters and a
+transcript at an absolute path outside any repository.
+
+**The documentation caused the confusion and has been corrected in both places.** The rule
+and the requirement were never in conflict, but nothing said so:
+
+* `results/<id>.json` **carries the answer text** -- that is how the asking side receives it,
+  and what `client.py` prints.
+* The saved **transcript file** stays outside any git working tree, because it quotes
+  proprietary source at length. `answers/` is ignored in the ops repo so a stray copy cannot
+  be committed by accident.
+
+An agent reading only the second half concludes the workflow is broken at the last step,
+which is precisely what happened. Two regression tests now cover it: the answer must reach
+the caller, and an `answers_dir` inside the ops repo must still be refused.
