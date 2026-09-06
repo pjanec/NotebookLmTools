@@ -394,12 +394,14 @@ class Agent:
         """
         source = Path(client.__file__).read_text(encoding="utf-8")
         target = self.config.ops_repo / "client.py"
+        # Compared as text, never as bytes. With core.autocrlf on -- the default on a
+        # Windows install -- git hands back CRLF in the working tree and stores LF in
+        # the commit, so a byte comparison would differ forever and commit every pass.
+        # The Linux VM gets LF from the blob either way.
         if target.is_file() and target.read_text(encoding="utf-8") == source:
             return False
 
-        # write_bytes, so the published copy keeps the LF endings read_text gave us:
-        # the reader is a Linux VM, and write_text would translate them on Windows.
-        target.write_bytes(source.encode("utf-8"))
+        target.write_text(source, encoding="utf-8")
         _run(["git", "add", "client.py"], self.config.ops_repo)
         _run(["git", "commit", "--quiet", "-m",
               "client.py: publish the copy matching the agent"], self.config.ops_repo)

@@ -721,3 +721,11 @@ and a client older than the agent is precisely how a caller comes to send a verb
 longer exists — which this change made possible for the first time. So each pass copies the
 client the agent itself imports into the ops repo and pushes it when it differs. Cloning the
 queue now gets a client that speaks the same protocol, and `git pull` updates it.
+
+**Restarting the relay agent is not what it looks like.** `Stop-ScheduledTask` stopped the
+task but left the `python.exe` under the `.cmd` wrapper alive and polling. The task then
+reported `Ready` while an agent was still running, so a `Start-ScheduledTask` would have put
+**two** agents on one queue — the one thing the design says must never happen, because job
+identity comes from the filename and both would execute it. Observed here, twice. The
+restart procedure in `remote-control.md` now kills the python process explicitly and says to
+count the processes before starting.

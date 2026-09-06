@@ -230,6 +230,32 @@ machine, a Scheduled Task set to *run whether the user is logged on or not*, wit
 on failure*, is the simplest arrangement. The agent reads its config at startup and refuses
 to start on a bad one rather than half-working.
 
+**Restarting it** — after a config change, or after updating the tools:
+
+```powershell
+Stop-ScheduledTask  -TaskName "NotebookLM relay agent"
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object { $_.CommandLine -like "*nlmtools.ops.agent*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force }      # see below
+Start-ScheduledTask -TaskName "NotebookLM relay agent"
+```
+
+⚠ **`Stop-ScheduledTask` does not reliably kill the agent.** The task runs a `.cmd` wrapper,
+and stopping the task can leave the `python.exe` beneath it alive — still polling, still on
+the old code. Worse, the task is then `Ready` while an orphan is running, so
+`Start-ScheduledTask` gives you *two* agents against one queue, which breaks
+exactly-once. Kill the python process explicitly, as above, and confirm before starting:
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='python.exe'" |
+    Where-Object { $_.CommandLine -like "*nlmtools.ops.agent*" } |
+    Select-Object ProcessId, CreationDate
+Get-Content "$env:USERPROFILE\nlm-ops-agent.log" -Tail 3
+```
+
+Exactly one process, and a fresh `agent watching ... every 20s` line, is what a good restart
+looks like.
+
 ### 4.6 Use it from the cloud VM
 
 `client.py` needs nothing but Python and `git` — copy the single file across, or clone this
