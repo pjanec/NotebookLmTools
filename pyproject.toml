@@ -6,6 +6,10 @@ requires-python = ">=3.11"
 dependencies = [
     "keyring>=25.0",
     "notebooklm-mcp-cli",
+    # Used by the external dump tool. Declared here so the bundle can be built with this
+    # project's own interpreter rather than depending on a user-level pip install that a
+    # new machine would not have.
+    "pathspec>=0.12",
 ]
 
 [project.optional-dependencies]

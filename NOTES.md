@@ -600,3 +600,29 @@ Also fixed while testing: the client required `--json` and friends *before* the 
 the documentation showed `status --json` — the order anyone would actually type. Common
 options are now accepted in either position, using `argparse.SUPPRESS` so the subparser's
 default cannot overwrite a value given earlier.
+
+## 2026-09-06 — the dump tool must run on our own interpreter
+
+The first full `refresh` through the queue failed in 31 seconds with
+`ModuleNotFoundError: No module named 'pathspec'`, from `C:\Python313\python.exe` — an
+interpreter that demonstrably *has* pathspec, and which had run the same dump by hand
+minutes earlier.
+
+`pathspec` was installed with `pip install --user`, so it lives in
+`AppData\Roaming\Python\Python313\site-packages`. Run directly from a shell, that path is on
+`sys.path`. Spawned as a child of the venv interpreter, the *same executable* resolves user
+site-packages to the Microsoft Store location
+(`AppData\Local\Packages\PythonSoftwareFoundation...\local-packages`) and never sees it.
+Environment leakage was ruled out first: cleaning `__PYVENV_LAUNCHER__`, `VIRTUAL_ENV`,
+`PYTHONHOME` and `PYTHONPATH` changed nothing.
+
+**Fixed by removing the dependency on someone's user-level install.** `dump.py`'s only
+third-party import is `pathspec`, so it is now declared in `pyproject.toml`, pinned in
+`requirements.lock`, and the dump runs under this project's own venv. The agent config's
+`python` now defaults to `sys.executable` rather than a bare `python`, which would pick up
+whatever is on PATH and whose site-packages are nobody's responsibility.
+
+Worth noting what this would have cost later: a new machine following
+`bootstrap-new-machine.md` would have installed cleanly, passed the live check — which does
+not run the dump tool — and then failed on its first `refresh` with an error pointing at an
+interpreter that appears to have the module.

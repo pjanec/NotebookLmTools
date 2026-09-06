@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -207,7 +208,10 @@ class AgentConfig:
             config = cls(
                 ops_repo=Path(data["ops_repo"]),
                 nlmt=Path(data["nlmt"]),
-                python=Path(data.get("python") or "python"),
+                # Default to the interpreter running the agent: it is this project's venv,
+                # where the dump tool's dependencies are pinned. A bare "python" would pick
+                # up whatever is on PATH, whose site-packages are nobody's responsibility.
+                python=Path(data.get("python") or sys.executable),
                 dump_tool=Path(data["dump_tool"]),
                 projects=projects,
                 poll_seconds=int(data.get("poll_seconds", 20)),

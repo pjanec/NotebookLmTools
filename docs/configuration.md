@@ -51,7 +51,7 @@ the only way to widen what a cloud VM can reach.
 |---|---|---|
 | `ops_repo` | yes | local clone of the private job queue |
 | `nlmt` | yes | the `nlmt` executable in this project's venv |
-| `python` | no | interpreter used to run the dump tool (default: `python`) |
+| `python` | no | interpreter used to run the dump tool. **Defaults to the one running the agent**, i.e. this project's venv, where the dump tool's dependency (`pathspec`) is pinned. Override only if you must, and see the warning below |
 | `dump_tool` | yes | path to `dump.py` |
 | `poll_seconds` | no | how often to look for work (default 20) |
 | `audit_log` | no | append-only record of every job, refusals included |
@@ -81,6 +81,14 @@ number of files the dump produced.
 Note that the dump tool inserts an ordinal: `Docs.All.txt` becomes `Docs.All_276.01.txt`, so
 the mask `Docs.` still matches. A mask of `Docs.All.` would **not** match, because the
 ordinal lands before the extension.
+
+**Do not point `python` at a system interpreter.** The dump tool needs `pathspec`, which
+this project declares and `setup.ps1` installs into the venv. Naming a system Python instead
+works only if `pathspec` happens to be installed there — and on Windows it can fail even
+when it looks installed: a `pip install --user` package lives in
+`AppData\Roaming\Python\...`, but that same interpreter, when spawned as a child of the
+venv, resolves user-site to the Microsoft Store location and cannot see it. The failure is
+`ModuleNotFoundError: No module named 'pathspec'` from an interpreter you can prove has it.
 
 **Filter files must be committed.** `sync` runs `git clean -fd`, which deletes untracked
 files — an uncommitted `.dumpfilter` disappears the first time a branch is synced, and
