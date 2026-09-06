@@ -57,6 +57,7 @@ class Attachment:
 class Job:
     verb: str
     id: str = field(default_factory=lambda: f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:8]}")
+    project: str | None = None
     ref: str | None = None
     question: str | None = None
     name: str | None = None
@@ -158,6 +159,11 @@ def validate(job: Job) -> Job:
 
     if job.name is not None and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", job.name):
         raise JobRejected("name must be a short alphanumeric slug")
+
+    # The project selects which repository and notebook the verb acts on, so it is checked
+    # here for shape and resolved against the agent's configuration later.
+    if job.project is not None and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", job.project):
+        raise JobRejected("project must be a plain identifier")
 
     return job
 

@@ -29,10 +29,10 @@ operate on:
 
 | Verb | The caller chooses | The operator fixes, at startup |
 |---|---|---|
-| `sync` | a git ref | which repository, and that refs resolve against *its* origin |
-| `refresh` | nothing at all | the dump command, bundle folder, masks, project, notebook |
-| `ask` | question text, attachments | which notebook, which project |
-| `status` | nothing | which notebook |
+| `sync` | a project, a git ref | which repository each project means, its origin, and any ref allowlist |
+| `refresh` | a project | which filters produce which outputs, the bundle folder, masks, notebook |
+| `ask` | a project, question text, attachments | which notebook receives it |
+| `status` | a project | which notebook |
 
 A leaked token therefore lets someone ask your notebook questions and read the answers —
 which is **source-code disclosure and should be taken seriously** — but not run commands on
@@ -44,17 +44,23 @@ be plain names (never a URL, never something that reads as a git option), attach
 must be plain filenames with a text-like extension, sizes are capped, binaries are refused,
 and a job's identity comes from its filename rather than from a field the caller controls.
 
-### The one real exposure, stated plainly
+### The agent never runs code that arrived with a branch
 
-`refresh` runs `dump.bat` **from whatever ref was last synced**, so a `sync` followed by a
-`refresh` executes code from that branch. That is unavoidable if the cloud VM is to work on
-arbitrary branches — and it is acceptable for one reason: **the ref can only come from your
-own private source repository.** Anyone able to push there already controls every machine
-that pulls from it, so the agent adds no meaningful reach. What is forbidden is pointing the
-machine at a *different* repository, which is why the verb takes a ref and never a URL.
+`dump.bat` lives *in the repository*, so syncing an untrusted ref and then running it would
+be a backdoor by construction — a compromised branch would own the machine holding your
+Google credentials. The agent therefore does not use it. That script only ever wrapped a
+handful of calls to the same dump tool, so the agent makes those calls itself, from
+configuration the operator owns.
 
-If you would rather not accept even that, restrict `sync` to an allowlist of branch names in
-the agent config.
+What *is* still read from the repository is the filter files, and that is a bounded choice
+rather than an oversight. They are `.dumpignore`-style pattern lists, the agent supplies the
+scan root, and the dump tool only walks that root. A rewritten filter can therefore widen
+the dump *within the repository* but cannot reach outside it — and everything it could add
+is content the same attacker already controls. The path is validated as a plain relative
+path in any case.
+
+For the tightest setting, combine `allowed_refs` with a `dump` list naming only filters you
+have reviewed.
 
 ---
 
@@ -96,25 +102,56 @@ git clone https://github.com/pjanec/nlm-ops.git      # on each side
 
 ### 4. Configure the agent (Windows)
 
-Write `ops-agent.json` **outside any repository** — it names local paths, not secrets:
+Write `ops-agent.json` **outside any repository** — it names local paths, not secrets. One
+agent serves as many projects as you list:
 
 ```json
 {
-  "ops_repo":      "C:\\Users\\pjane\\nlm-ops",
-  "source_repo":   "D:\\WORK\\IOS-IG-SimHost-FDP",
-  "dump_command":  ["cmd", "/c", "dump.bat"],
-  "bundle_folder": "D:\\WORK\\IOS-IG-SimHost-FDP\\.dumps",
-  "masks":         ["HROT.", "FDP.", "Docs."],
-  "project":       "simhost",
-  "notebook":      "SimHost FDP review",
-  "nlmt":          "D:\\WORK\\NotebookLM\\.venv\\Scripts\\nlmt.exe",
-  "poll_seconds":  20,
-  "audit_log":     "C:\\Users\\pjane\\nlm-ops-audit.jsonl"
+  "ops_repo":   "C:\\Users\\pjane\\nlm-ops",
+  "nlmt":       "D:\\WORK\\NotebookLM\\.venv\\Scripts\\nlmt.exe",
+  "python":     "C:\\Python313\\python.exe",
+  "dump_tool":  "C:\\Utils\\AITools\\CodeDump\\dump.py",
+  "poll_seconds": 20,
+  "audit_log":  "C:\\Users\\pjane\\nlm-ops-audit.jsonl",
+
+  "projects": {
+    "simhost": {
+      "repo":     "D:\\WORK\\IOS-IG-SimHost-FDP",
+      "origin":   "https://github.com/pjanec/IOS-IG-SimHost-FDP.git",
+      "notebook": "SimHost FDP review",
+      "drive_project": "simhost",
+      "masks":    ["HROT.", "FDP.", "Docs."],
+      "dump": [
+        {"filter": "dmp-EXT.dumpfilter",                  "output": "FDP.Ext.txt"},
+        {"filter": "dmp-FDP.dumpfilter",                  "output": "FDP.Eng.txt"},
+        {"filter": "dmp-HROT.Eng.dumpfilter",             "output": "HROT.Eng.txt"},
+        {"filter": "dmp-HROT.Subsys.dumpfilter",          "output": "HROT.Sub.txt"},
+        {"filter": "dmp-HROT.Blueprint.Tests.dumpfilter", "output": "HROT.Blueprint.Tests.txt"}
+      ]
+    }
+  }
 }
 ```
 
-Everything a job may *not* choose lives here. Widening this file is the only way to widen
-what the cloud VM can reach.
+**Everything a job may *not* choose lives here**, and widening this file is the only way to
+widen what the cloud VM can reach.
+
+Four fields earn their place:
+
+- **`dump`** replaces running the repository's `dump.bat`. Each entry is one call to the
+  dump tool with a filter from the repository and an output name the agent chose. The agent
+  applies `--overwrite`, which advances the ordinal and deletes the previous generation, and
+  the tool's default word-splitting keeps every part under NotebookLM's 500,000-word cap.
+  Output lands in `<repo>\.dumps`.
+- **`origin`**, when set, must match the clone's actual origin before a sync proceeds.
+  Cheap, and it catches a repository repointed locally at some later date.
+- **`allowed_refs`**, when set, restricts `sync` to a fixed list of branch names. Omit it to
+  allow any ref on the origin.
+- **`masks`** must be non-empty: an empty mask set would let a load touch sources it did not
+  upload.
+
+With more than one project configured, **every job must name one**. The agent refuses to
+guess, because guessing would eventually load one project's sources into another's notebook.
 
 ### 5. Run the agent
 
@@ -133,10 +170,10 @@ on failure*, is the simplest arrangement.
 repository.
 
 ```
-python client.py --ops-repo ~/nlm-ops sync --ref feature/my-branch
-python client.py --ops-repo ~/nlm-ops refresh
-python client.py --ops-repo ~/nlm-ops ask --question-file question.md --attach data.json
-python client.py --ops-repo ~/nlm-ops status --json
+python client.py --ops-repo ~/nlm-ops --project simhost sync --ref feature/my-branch
+python client.py --ops-repo ~/nlm-ops --project simhost refresh
+python client.py --ops-repo ~/nlm-ops --project simhost ask --question-file q.md --attach data.json
+python client.py --ops-repo ~/nlm-ops --project simhost status --json
 ```
 
 Each call pushes a job and waits for the result. Expect a poll interval (~20s) plus the work
@@ -164,7 +201,8 @@ files, since git keeps them otherwise.
 
 ## What is deliberately impossible
 
-- Running an arbitrary command. There is no verb for it and no parameter that becomes one.
+- Running an arbitrary command. There is no verb for it, no parameter that becomes one,
+  and nothing arriving with a synced branch is executed.
 - Reading an arbitrary file. `ask` returns an answer; `status` returns source titles.
 - Pointing the machine at a different repository. `sync` takes a ref, never a URL.
 - Writing outside the scratch directory. Attachment names may not contain a path.
@@ -182,3 +220,5 @@ files, since git keeps them otherwise.
 | `ask` fails with exit 11 | the NotebookLM session could not be renewed; a human must run `nlm login` on Windows |
 | `refresh` fails with exit 13 | content did not survive ingestion — do not trust the notebook until it is understood |
 | results appear twice | two agents are running against one ops repo; run only one |
+| `must name one` | the agent serves several projects; pass `--project` |
+| `origin is ... expected ...` | the clone's remote does not match the configured origin |

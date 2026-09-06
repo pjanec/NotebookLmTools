@@ -80,6 +80,8 @@ def build_job(args: argparse.Namespace) -> dict:
         "requested_by": "cloud",
         "attachments": [],
     }
+    if args.project:
+        job["project"] = args.project
     if args.verb == "sync":
         job["ref"] = args.ref
     elif args.verb == "ask":
@@ -109,6 +111,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--timeout", type=float, default=3600,
                         help="how long to wait for a result (default 3600s)")
     parser.add_argument("--json", action="store_true", help="print the raw result")
+    parser.add_argument("--project",
+                        help="which configured project to act on; required when the agent "
+                             "serves more than one")
 
     verbs = parser.add_subparsers(dest="verb", required=True)
 

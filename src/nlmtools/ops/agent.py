@@ -5,14 +5,17 @@ connections, so there is no port to attack, no tunnel to misconfigure and no cer
 get wrong. The trade is latency -- a job waits up to one poll interval -- which is
 irrelevant next to the couple of minutes an `ask` takes anyway.
 
-What the agent will do is fixed at startup by the operator, not by the caller:
+One agent serves several projects. A job names a **project** and, for `sync`, a **ref**;
+everything else -- repository, origin, notebook, masks, and which filters produce which
+dump outputs -- comes from the agent's own configuration (`config.py`).
 
-* the source repository it syncs, and the origin refs are resolved against
-* the dump command, the bundle folder, the masks, the project and the notebook
+**The agent never runs a script that arrived with a branch.** `dump.bat` lives in the
+repository, so syncing an untrusted ref and then running it would be a backdoor by
+construction. That batch file only ever wrapped a handful of calls to the same dump tool,
+so the agent makes those calls itself, from configuration it owns.
 
-A job says *which ref* and *what question*. It cannot say *which folder*, *which command*
-or *which repository*. That is what keeps a leaked ops-repo token from becoming a shell on
-an always-on machine.
+A job cannot say which folder, which command, which repository or which notebook. That is
+what keeps a leaked ops-repo token from becoming a shell on an always-on machine.
 """
 
 from __future__ import annotations
@@ -21,9 +24,9 @@ import json
 import logging
 import subprocess
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
+from .config import AgentConfig, ConfigError, ProjectConfig
 from .protocol import Job, JobRejected, Result, safe_attachment_name, validate
 
 log = logging.getLogger("nlmtools.ops.agent")
@@ -34,38 +37,6 @@ RESULTS_DIR = "results"
 #: Presence of this file in the ops repo stops the agent picking anything up. A kill switch
 #: that works from either machine, needing no access to the Windows box.
 PAUSE_FILE = "PAUSED"
-
-
-@dataclass
-class AgentConfig:
-    """Everything a job is *not* allowed to choose."""
-
-    ops_repo: Path            # local clone of the private ops repo
-    source_repo: Path         # the project that gets synced and dumped
-    dump_command: list[str]   # e.g. ["cmd", "/c", "dump.bat"]
-    bundle_folder: Path       # where the dump lands
-    masks: list[str]
-    project: str
-    notebook: str
-    nlmt: Path                # the nlmt executable in our venv
-    poll_seconds: int = 20
-    audit_log: Path | None = None
-
-    @classmethod
-    def from_file(cls, path: Path) -> "AgentConfig":
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        return cls(
-            ops_repo=Path(data["ops_repo"]),
-            source_repo=Path(data["source_repo"]),
-            dump_command=list(data["dump_command"]),
-            bundle_folder=Path(data["bundle_folder"]),
-            masks=list(data["masks"]),
-            project=data["project"],
-            notebook=data["notebook"],
-            nlmt=Path(data["nlmt"]),
-            poll_seconds=int(data.get("poll_seconds", 20)),
-            audit_log=Path(data["audit_log"]) if data.get("audit_log") else None,
-        )
 
 
 def _run(args: list[str], cwd: Path, timeout: float = 1800) -> subprocess.CompletedProcess:
@@ -93,7 +64,7 @@ class Agent:
         """
         line = json.dumps({
             "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "id": job.id, "verb": job.verb, "ref": job.ref,
+            "id": job.id, "verb": job.verb, "ref": job.ref, "project": job.project,
             "question_chars": len(job.question or ""),
             "attachments": [a.name for a in job.attachments],
             "outcome": outcome, "detail": detail[:400],
@@ -131,14 +102,33 @@ class Agent:
 
     # -- verbs --------------------------------------------------------------------
 
-    def do_sync(self, job: Job) -> Result:
-        """Check out a ref of the source repo.
+    def do_sync(self, job: Job, project: ProjectConfig) -> Result:
+        """Check out a ref of the project's repository.
 
         The ref is resolved against the agent's own origin. A caller supplies a name, never
         a URL, so this cannot be pointed at someone else's repository -- and anyone able to
         push to the configured origin already controls every machine that pulls from it.
         """
-        repo = self.config.source_repo
+        repo = project.repo
+
+        if project.origin:
+            # Refuse if the clone's origin is not the one configured. Cheap, and it catches
+            # a repository that was repointed locally at some later date.
+            actual = _run(["git", "remote", "get-url", "origin"], repo).stdout.strip()
+            if actual != project.origin:
+                return self._failed(
+                    job,
+                    f"{project.name}: origin is {actual!r}, expected {project.origin!r}",
+                    hint="the agent refuses to sync a repository it does not recognise",
+                )
+
+        if not project.ref_allowed(job.ref or ""):
+            return self._failed(
+                job,
+                f"ref {job.ref!r} is not in this project's allowed list",
+                hint="allowed: " + ", ".join(project.allowed_refs),
+            )
+
         fetched = _run(["git", "fetch", "--quiet", "origin"], repo)
         if fetched.returncode != 0:
             return self._failed(job, f"git fetch failed: {fetched.stderr.strip()[-300:]}")
@@ -161,17 +151,42 @@ class Agent:
         return Result(id=job.id, verb=job.verb, ok=True,
                       detail={"ref": job.ref, "commit": sha, "subject": described})
 
-    def do_refresh(self, job: Job) -> Result:
-        """Regenerate the bundle and load it. Takes no parameters from the caller."""
-        dumped = _run(self.config.dump_command, self.config.source_repo, timeout=3600)
-        if dumped.returncode != 0:
-            return self._failed(job, f"dump failed: {dumped.stderr.strip()[-400:]}")
+    def do_refresh(self, job: Job, project: ProjectConfig) -> Result:
+        """Regenerate the bundle and load it. The caller supplies nothing but the project.
+
+        The dump is driven from our own configuration rather than by running the repo's
+        `dump.bat`: each entry is one invocation of the dump tool with a filter from the
+        repository and an output name we chose. `--overwrite` is what advances the ordinal
+        and removes the previous generation, so only one batch is ever left on disk.
+        """
+        produced: list[str] = []
+        for entry in project.dump:
+            filter_path = project.repo / entry.filter
+            if not filter_path.is_file():
+                return self._failed(
+                    job, f"{project.name}: filter {entry.filter!r} is missing from the "
+                         f"repository at this ref",
+                    hint="sync a ref that contains it, or correct the agent config",
+                )
+            dumped = _run(
+                [self.config.python, self.config.dump_tool,
+                 "--overwrite", "--filter-file", str(filter_path),
+                 ".", entry.output],
+                project.repo, timeout=3600,
+            )
+            if dumped.returncode != 0:
+                return self._failed(
+                    job,
+                    f"{project.name}: dump of {entry.output!r} failed: "
+                    f"{(dumped.stderr or dumped.stdout).strip()[-400:]}",
+                )
+            produced.append(entry.output)
 
         args = [self.config.nlmt, "load",
-                "--notebook", self.config.notebook,
-                "--local-folder", str(self.config.bundle_folder),
-                "--project", self.config.project, "--json"]
-        for mask in self.config.masks:
+                "--notebook", project.notebook,
+                "--local-folder", str(project.bundle_folder),
+                "--project", project.drive_project, "--json"]
+        for mask in project.masks:
             args += ["--mask", mask]
 
         loaded = _run(args, self.config.ops_repo, timeout=5400)
@@ -180,10 +195,11 @@ class Agent:
             return Result(id=job.id, verb=job.verb, ok=False, exit_code=loaded.returncode,
                           error=(envelope.get("error") or {}).get("message", "load failed"),
                           hint=(envelope.get("error") or {}).get("hint"),
-                          detail={"envelope": envelope})
-        return Result(id=job.id, verb=job.verb, ok=True, detail={"envelope": envelope})
+                          detail={"envelope": envelope, "dumped": produced})
+        return Result(id=job.id, verb=job.verb, ok=True,
+                      detail={"envelope": envelope, "dumped": produced})
 
-    def do_ask(self, job: Job) -> Result:
+    def do_ask(self, job: Job, project: ProjectConfig) -> Result:
         """Ask the notebook. The caller chooses the question, never the notebook."""
         scratch = self.config.ops_repo / ".scratch" / job.id
         scratch.mkdir(parents=True, exist_ok=True)
@@ -192,9 +208,9 @@ class Agent:
             question_file.write_text(job.question or "", encoding="utf-8")
 
             args = [self.config.nlmt, "ask",
-                    "--notebook", self.config.notebook,
+                    "--notebook", project.notebook,
                     "--question-file", str(question_file),
-                    "--project", self.config.project, "--json"]
+                    "--project", project.drive_project, "--json"]
             if job.name:
                 args += ["--name", job.name]
             for attachment in job.attachments:
@@ -222,8 +238,8 @@ class Agent:
                 leftover.unlink(missing_ok=True)
             scratch.rmdir()
 
-    def do_status(self, job: Job) -> Result:
-        args = [self.config.nlmt, "status", "--notebook", self.config.notebook, "--json"]
+    def do_status(self, job: Job, project: ProjectConfig) -> Result:
+        args = [self.config.nlmt, "status", "--notebook", project.notebook, "--json"]
         checked = _run(args, self.config.ops_repo, timeout=600)
         envelope = _parse_envelope(checked.stdout)
         return Result(id=job.id, verb=job.verb, ok=checked.returncode == 0,
@@ -247,10 +263,19 @@ class Agent:
             result.started = result.finished = started
             return result
 
+        try:
+            project = self.config.project(job.project)
+        except ConfigError as unknown:
+            self.audit(job, "refused", str(unknown))
+            result = self._failed(job, str(unknown),
+                                  hint="name a project this agent serves")
+            result.started = result.finished = started
+            return result
+
         handler = {"sync": self.do_sync, "refresh": self.do_refresh,
                    "ask": self.do_ask, "status": self.do_status}[job.verb]
         try:
-            result = handler(job)
+            result = handler(job, project)
         except subprocess.TimeoutExpired as expired:
             result = self._failed(job, f"timed out after {expired.timeout}s")
         except Exception as error:  # noqa: BLE001 - the agent reports, never dies
