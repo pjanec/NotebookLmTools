@@ -130,7 +130,10 @@ Getting these right matters more than it looks:
 - **`notebook_prefix`** decides which notebooks this project may touch. Name a project's
   notebooks with a common prefix and new architectural areas need no config change, while a
   leaked ops token still cannot reach another project's notebook.
-- **`origin`** is checked against the clone's actual remote before any sync.
+- **`origin`** is checked against the clone's actual remote before any sync, and every
+  refresh syncs.
+- **`default_ref`** is what a refresh syncs when the caller names no ref. Leave it unset
+  unless the project's work happens somewhere other than origin's default branch.
 - **`drive_project`** names the folder under `/NotebookLmTools` on Drive. Keep it distinct so
   `nlmt prune` can retire one project's bundles without touching another's.
 
@@ -208,6 +211,7 @@ or let a load create it, and pass `--notebook`. Provided the name matches the pr
 | `notebook ... is not allowed` | it falls outside `notebook_prefix` / `allowed_notebooks` |
 | `origin is ... expected ...` | the clone's remote does not match the configured origin |
 | `filter ... is missing` | the filter file is not on the currently synced ref |
+| `has uncommitted changes` | someone is working in the clone the agent syncs; commit, stash or discard on that machine |
 | a slice is missing from the notebook | its prefix is missing from `masks`, so it was never uploaded |
 | a source is stale while others update | its prefix was *removed* from `masks` after it was loaded, so it is neither replaced nor deleted |
 | no result at all | the agent is stopped, or `PAUSED` is present in the ops repo |

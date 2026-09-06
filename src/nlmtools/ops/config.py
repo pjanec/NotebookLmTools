@@ -1,13 +1,13 @@
 """What the agent is allowed to do, and for which projects.
 
-This file is the whole authorisation model. A job names a **project** and, for `sync`, a
+This file is the whole authorisation model. A job names a **project** and, optionally, a
 **ref**; everything else — which repository, which origin, which filters produce which
 outputs, which notebook receives them — is fixed here by the operator and cannot be
 influenced by a caller.
 
-**Why the agent does not run `dump.bat`.** That script lives *in the repository*, so a
-`sync` to an untrusted branch followed by a `refresh` would execute whatever that branch
-contained. It is a backdoor by construction. The batch file only ever wrapped a few calls to
+**Why the agent does not run `dump.bat`.** That script lives *in the repository*, and a
+refresh checks a branch out before it dumps, so running it would execute whatever that
+branch contained. It is a backdoor by construction. The batch file only ever wrapped a few calls to
 the same dump tool, so the agent makes those calls itself from this configuration, and
 nothing that arrives with a branch is ever executed.
 
@@ -67,6 +67,10 @@ class ProjectConfig:
     dump: list[DumpEntry]
     origin: str | None = None       # if set, the repo's origin must match before syncing
     allowed_refs: list[str] = field(default_factory=list)  # empty means any ref on origin
+
+    #: Synced when a refresh names no ref. Unset means origin's own default branch,
+    #: which is what a project wants unless its work happens somewhere else.
+    default_ref: str | None = None
 
     #: Notebooks this project may touch. A prefix is the practical guard: name notebooks
     #: for a project consistently and new ones need no config change, while a leaked ops
@@ -206,6 +210,7 @@ class AgentConfig:
                           for d in raw["dump"]],
                     origin=raw.get("origin"),
                     allowed_refs=list(raw.get("allowed_refs") or []),
+                    default_ref=raw.get("default_ref"),
                     notebook_prefix=raw.get("notebook_prefix"),
                     allowed_notebooks=list(raw.get("allowed_notebooks") or []),
                     default_notebook=raw.get("default_notebook"),

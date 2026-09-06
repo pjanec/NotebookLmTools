@@ -683,3 +683,33 @@ and the requirement were never in conflict, but nothing said so:
 An agent reading only the second half concludes the workflow is broken at the last step,
 which is precisely what happened. Two regression tests now cover it: the answer must reach
 the caller, and an `answers_dir` inside the ops repo must still be refused.
+
+## `sync` and `refresh` became one verb
+
+The two verbs were separate because they are separate ideas. Asked what a refresh without a
+sync, or a sync without a refresh, was actually *for*, neither answer survived contact:
+
+* **sync alone** changes the Windows working tree and nothing else. No verb other than
+  `refresh` reads that tree, so the notebook stays on the old bundle and the architect is
+  entirely unaffected. It was a no-op with a progress message.
+* **refresh alone** rebuilt whatever commit the clone happened to be sitting on. It did not
+  fetch, so it succeeded, reported success, and the architect then answered confidently
+  about the wrong tree. Nothing anywhere said so.
+
+The second is the dangerous one: **a silent failure that looks exactly like success.** The
+only genuine use for the unsynced form was loading the same code into a second notebook,
+which is worth far less than the trap costs.
+
+So there is now one verb. `refresh` always syncs; `--ref` chooses the branch and, omitted,
+the project's `default_ref` or origin's own default branch is used. There is no way to
+express "rebuild without syncing", which was the one way to use it wrongly. The result
+carries the ref *and* the commit, so a stale tree is visible rather than silent.
+
+`sync` is refused with a message naming its replacement rather than "unknown verb", because
+the cloud session and its documentation may be older than the agent.
+
+**A guard came with it.** The clone the agent syncs is often the operator's own working
+copy, and a sync hard-resets and cleans it. Under the old split that only happened when
+someone explicitly asked for a ref; now every refresh does it. So a sync refuses outright
+when the tree has uncommitted changes, naming the first few, instead of destroying an
+afternoon's work. Gitignored files -- the `.dumps` bundle among them -- do not count.

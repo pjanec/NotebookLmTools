@@ -66,8 +66,9 @@ notebooks and you want each project's token confined to its own.
 | Field | Required | Meaning |
 |---|---|---|
 | `repo` | yes | the working clone to sync and dump |
-| `origin` | no | if set, must match the clone's actual remote before a sync — catches a repository repointed locally later |
-| `allowed_refs` | no | restricts `sync` to these branch names; omit to allow any ref on origin |
+| `origin` | no | if set, must match the clone's actual remote before a refresh — catches a repository repointed locally later |
+| `allowed_refs` | no | restricts refreshes to these branch names; omit to allow any ref on origin |
+| `default_ref` | no | synced when a refresh names no ref; unset means origin's own default branch |
 | `masks` | yes | which files a load may select and which sources it may replace |
 | `dump` | yes | one entry per slice: a `filter` in the repository, and the `output` name |
 | `notebook_prefix` | no | which notebooks this project may touch, by prefix |
@@ -100,9 +101,9 @@ into that clone — untracked, but one `git add -A` from being pushed. `answers_
 beside the config file, the agent refuses a path inside the ops repo, and the ops repo
 ignores `answers/` as well.
 
-**Filter files must be committed.** `sync` runs `git clean -fd`, which deletes untracked
-files — an uncommitted `.dumpfilter` disappears the first time a branch is synced, and
-`refresh` then fails with "filter is missing".
+**Filter files must be committed.** Every refresh syncs, and a sync runs `git clean -fd`,
+which deletes untracked files — an uncommitted `.dumpfilter` disappears the first time a
+branch is synced, and the refresh then fails with "filter is missing".
 
 ---
 

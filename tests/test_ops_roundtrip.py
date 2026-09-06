@@ -91,8 +91,7 @@ def agent(ops, tmp_path):
     built.do_ask = lambda job, project, notebook: Result(
         id=job.id, verb=job.verb, ok=True,
         answer=f"answer to: {job.question}", detail={"notebook": notebook})
-    built.do_sync = lambda job, project, notebook=None: Result(
-        id=job.id, verb=job.verb, ok=True, detail={"ref": job.ref})
+    built.sync = lambda job, project: None      # returns a Result only on failure
     return built
 
 
@@ -153,7 +152,8 @@ def test_several_jobs_are_all_handled(ops, agent):
 
 def test_a_refused_job_still_produces_a_result(ops, agent):
     """Silence is the worst outcome: the caller would wait for its full timeout."""
-    job_id = submit(ops["cloud"], Job(verb="sync", ref="--upload-pack=/bin/sh", project="alpha"))
+    job_id = submit(ops["cloud"], Job(verb="refresh", ref="--upload-pack=/bin/sh",
+                                      project="alpha"))
 
     agent.poll_once()
 
@@ -203,14 +203,14 @@ def test_the_job_id_comes_from_the_filename_not_the_payload(ops, agent):
 
 def test_every_job_is_audited_including_refusals(ops, agent, tmp_path):
     submit(ops["cloud"], Job(verb="refresh", project="alpha"))
-    submit(ops["cloud"], Job(verb="sync", ref="../../etc/passwd", project="alpha"))
+    submit(ops["cloud"], Job(verb="ask", project="alpha"))      # no question: refused
     agent.poll_once()
 
     lines = [json.loads(l) for l in
              (tmp_path / "audit.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
     outcomes = {entry["verb"]: entry["outcome"] for entry in lines}
     assert outcomes["refresh"] == "ok"
-    assert outcomes["sync"] == "refused"
+    assert outcomes["ask"] == "refused"
 
 
 def test_a_job_must_name_one_of_several_projects(ops, agent):
@@ -339,24 +339,45 @@ def test_the_transcript_itself_stays_out_of_the_ops_repo(ops, agent, tmp_path):
     assert "inside the ops repo" in str(caught.value)
 
 
-def test_refresh_with_a_ref_syncs_first(ops, agent):
-    """The common case is one job: put the machine on my branch, then rebuild."""
-    order = []
-    agent.do_sync = lambda job, project, notebook=None: (
-        order.append(("sync", job.ref)) or Result(id=job.id, verb="sync", ok=True))
-    original_refresh = agent.do_refresh
-    agent.do_refresh = lambda job, project, notebook: (
-        order.append(("refresh", job.ref)) or original_refresh.__wrapped__(job, project, notebook)
-        if hasattr(original_refresh, "__wrapped__")
-        else (order.append(("refresh", job.ref)) or Result(id=job.id, verb="refresh", ok=True)))
+def _refresh_that_only_syncs(agent, recorder):
+    """The real do_refresh, with the sync stubbed to record and then stop the job.
 
-    submit(ops["cloud"], Job(verb="refresh", project="alpha", ref="feature/x"))
+    Stopping at the sync keeps the test off the dump tool and NotebookLM while still
+    exercising the thing under test: that the sync happens at all, and first.
+    """
+    agent.sync = lambda job, project: (
+        recorder.append(job.ref)
+        or Result(id=job.id, verb=job.verb, ok=False, error="stopped after the sync"))
+    agent.do_refresh = Agent.do_refresh.__get__(agent)
+
+
+def test_a_refresh_always_syncs_first(ops, agent):
+    """One verb does the whole update, so the notebook cannot lag the branch."""
+    refs = []
+    _refresh_that_only_syncs(agent, refs)
+
+    job_id = submit(ops["cloud"], Job(verb="refresh", project="alpha", ref="feature/x"))
     agent.poll_once()
-    assert order and order[0][0] == "refresh"  # the stub replaces the sync-then-dump body
+
+    assert refs == ["feature/x"]
+    # A sync that fails aborts the refresh: rebuilding from the wrong tree is worse
+    # than not rebuilding, because it succeeds quietly.
+    assert result_for(ops["cloud"], job_id)["ok"] is False
 
 
-def test_a_bad_ref_is_refused_on_refresh_too(ops, agent):
-    """The ref is validated identically wherever it appears."""
+def test_a_refresh_without_a_ref_syncs_the_default_branch(ops, agent):
+    """There is no unsynced refresh -- that was the one way to use it wrongly."""
+    refs = []
+    _refresh_that_only_syncs(agent, refs)
+
+    submit(ops["cloud"], Job(verb="refresh", project="alpha"))
+    agent.poll_once()
+
+    assert refs == [None]        # sync() resolves the default, so a sync still happens
+
+
+def test_a_bad_ref_is_refused_before_it_reaches_git(ops, agent):
+    """The ref is validated on the agent's side of the trust boundary."""
     job_id = submit(ops["cloud"], Job(verb="refresh", project="alpha",
                                       ref="--upload-pack=/bin/sh"))
     agent.poll_once()
@@ -365,8 +386,38 @@ def test_a_bad_ref_is_refused_on_refresh_too(ops, agent):
     assert "refused" in result["error"]
 
 
-def test_refresh_without_a_ref_is_still_allowed(ops, agent):
-    """Reloading the tree as it stands, for instance into a different notebook."""
-    job_id = submit(ops["cloud"], Job(verb="refresh", project="alpha"))
+def test_the_retired_sync_verb_is_refused_with_a_pointer(ops, agent):
+    """An old client, or old documentation, gets told what to call instead."""
+    job_id = submit(ops["cloud"], Job(verb="sync", project="alpha", ref="main"))
     agent.poll_once()
-    assert result_for(ops["cloud"], job_id)["ok"] is True
+    result = result_for(ops["cloud"], job_id)
+    assert result["ok"] is False
+    assert "refresh --ref" in result["error"]
+
+
+def test_a_refresh_refuses_to_clobber_uncommitted_work(ops, agent, tmp_path):
+    """The synced clone is often someone's working copy. Losing it is not acceptable."""
+    source = tmp_path / "source-repo"
+    source.mkdir()
+    for command in (["git", "init", "--quiet"],
+                    ["git", "config", "user.email", "t@example.invalid"],
+                    ["git", "config", "user.name", "t"]):
+        subprocess.run(command, cwd=source, check=True)
+    (source / "seed.txt").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=source, check=True)
+    subprocess.run(["git", "commit", "--quiet", "-m", "seed"], cwd=source, check=True)
+    (source / "seed.txt").write_text("work in progress\n", encoding="utf-8")
+
+    project = agent.config.projects["alpha"]
+    project.repo = source
+    project.origin = None
+    agent.sync = Agent.sync.__get__(agent)              # the real one, not the stub
+    agent.do_refresh = Agent.do_refresh.__get__(agent)
+
+    job_id = submit(ops["cloud"], Job(verb="refresh", project="alpha", ref="main"))
+    agent.poll_once()
+
+    result = result_for(ops["cloud"], job_id)
+    assert result["ok"] is False
+    assert "uncommitted" in result["error"]
+    assert (source / "seed.txt").read_text(encoding="utf-8") == "work in progress\n"

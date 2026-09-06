@@ -1,6 +1,6 @@
 # Remote control: driving the Windows machine from a Claude cloud VM
 
-Design and setup for letting an ephemeral Linux session sync a branch, refresh a NotebookLM
+Design and setup for letting an ephemeral Linux session refresh a NotebookLM
 bundle, or put a question to the architect — on an always-on Windows machine holding
 credentials it must never be given.
 
@@ -12,7 +12,7 @@ For adding a project once this is running, see
    (Linux, ephemeral)              (GitHub, private)            (credentials, corpus)
 
      client.py  ──push job──►    jobs/<id>.json     ◄──poll──   agent
-                                                                  │ sync / refresh / ask
+                                                                  │ refresh / ask / status
      client.py  ◄──poll result── results/<id>.json  ──push──►   ──┘
 ```
 
@@ -62,13 +62,12 @@ the cloud VM can run it, which a sandboxed VM generally cannot.
 Nothing listens, so the question is not "can someone break in" but **"what does an attacker
 get if the ops-repo token leaks?"**
 
-The answer is bounded by making the agent **not a shell**. It accepts four verbs, and the
+The answer is bounded by making the agent **not a shell**. It accepts three verbs, and the
 caller chooses only which project and notebook — never what runs:
 
 | Verb | Caller supplies | The operator's config fixes |
 |---|---|---|
-| `sync` | project, git ref | which repo, its origin, any ref allowlist |
-| `refresh` | project, notebook, optionally a ref | which filters produce which outputs, the masks |
+| `refresh` | project, notebook, optionally a git ref | which repo, its origin, any ref allowlist; which filters produce which outputs; the masks |
 | `ask` | project, notebook, question, attachments | which notebooks the project may reach |
 | `status` | project, notebook | as above |
 
@@ -269,8 +268,9 @@ several minutes, an ask one to four.
 | Field | Meaning |
 |---|---|
 | `repo` | the working clone to sync and dump |
-| `origin` | if set, must match the clone's actual remote before a sync proceeds — catches a repository repointed locally later |
-| `allowed_refs` | if set, restricts `sync` to these branch names; omit to allow any ref on origin |
+| `origin` | if set, must match the clone's actual remote before a refresh proceeds — catches a repository repointed locally later |
+| `allowed_refs` | if set, restricts refreshes to these branch names; omit to allow any ref on origin |
+| `default_ref` | synced when a refresh names no ref; unset means origin's own default branch |
 | `masks` | which files a load may select and which sources it may replace. **Must be non-empty** — an empty set would let a load touch sources it did not upload |
 | `dump` | one entry per slice: a `filter` from the repository, and the `output` name. The agent applies `--overwrite`, which advances the ordinal and deletes the previous generation; the tool's word-splitting keeps parts under NotebookLM's 500,000-word cap. Output lands in `<repo>\.dumps` |
 | `notebook_prefix` | which notebooks this project may touch, by prefix. Name a project's notebooks consistently and new areas need no config change |
@@ -313,6 +313,7 @@ since git keeps them otherwise.
 | `notebook ... is not allowed` | outside `notebook_prefix` / `allowed_notebooks` |
 | `origin is ... expected ...` | the clone's remote does not match the configured origin |
 | `filter ... is missing` | the filter file is not on the currently synced ref |
+| `has uncommitted changes` | someone is working in the clone the agent syncs; commit, stash or discard on that machine |
 | `ask` exits 11 | the NotebookLM session could not be renewed; a human must run `nlm login` on Windows |
 | `refresh` exits 13 | content did not survive ingestion — do not trust the notebook until it is understood |
 | results appear twice | **two agents against one ops repo.** Run only one |

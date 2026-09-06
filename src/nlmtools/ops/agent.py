@@ -5,7 +5,7 @@ connections, so there is no port to attack, no tunnel to misconfigure and no cer
 get wrong. The trade is latency -- a job waits up to one poll interval -- which is
 irrelevant next to the couple of minutes an `ask` takes anyway.
 
-One agent serves several projects. A job names a **project** and, for `sync`, a **ref**;
+One agent serves several projects. A job names a **project** and, optionally, a **ref**;
 everything else -- repository, origin, notebook, masks, and which filters produce which
 dump outputs -- comes from the agent's own configuration (`config.py`).
 
@@ -55,6 +55,7 @@ def _run(args: list[str], cwd: Path, timeout: float = 1800) -> subprocess.Comple
 class Agent:
     def __init__(self, config: AgentConfig) -> None:
         self.config = config
+        self._synced_ref: str | None = None   # what the last sync checked out, for the result
         self.jobs_dir = config.ops_repo / JOBS_DIR
         self.results_dir = config.ops_repo / RESULTS_DIR
 
@@ -142,14 +143,20 @@ class Agent:
 
     # -- verbs --------------------------------------------------------------------
 
-    def do_sync(self, job: Job, project: ProjectConfig, notebook: str | None = None) -> Result:
-        """Check out a ref of the project's repository.
+    def sync(self, job: Job, project: ProjectConfig) -> Result | None:
+        """Check out a ref of the project's repository. Returns a Result only on failure.
 
         The ref is resolved against the agent's own origin. A caller supplies a name, never
         a URL, so this cannot be pointed at someone else's repository -- and anyone able to
         push to the configured origin already controls every machine that pulls from it.
+
+        A job that names no ref gets the project's default branch. There is deliberately
+        no "leave the tree alone" mode: that was the one way to use a refresh wrongly,
+        since it rebuilt whatever commit the clone happened to be sitting on and reported
+        success either way.
         """
         repo = project.repo
+        ref = job.ref or project.default_ref or self._default_branch(repo)
 
         if project.origin:
             # Refuse if the clone's origin is not the one configured. Cheap, and it catches
@@ -162,55 +169,71 @@ class Agent:
                     hint="the agent refuses to sync a repository it does not recognise",
                 )
 
-        if not project.ref_allowed(job.ref or ""):
+        if not project.ref_allowed(ref):
             return self._failed(
                 job,
-                f"ref {job.ref!r} is not in this project's allowed list",
+                f"ref {ref!r} is not in this project's allowed list",
                 hint="allowed: " + ", ".join(project.allowed_refs),
+            )
+
+        # The clone is often the operator's own working copy, and a sync hard-resets and
+        # cleans it. Refuse rather than destroy: a refresh is not worth someone's afternoon.
+        dirty = _run(["git", "status", "--porcelain"], repo).stdout.strip()
+        if dirty:
+            first = dirty.splitlines()[:5]
+            return self._failed(
+                job,
+                f"{project.name}: the clone at {repo} has uncommitted changes, and a "
+                f"refresh would discard them: " + "; ".join(s.strip() for s in first),
+                hint="commit, stash or discard them on the always-on machine, then retry",
             )
 
         fetched = _run(["git", "fetch", "--quiet", "origin"], repo)
         if fetched.returncode != 0:
             return self._failed(job, f"git fetch failed: {fetched.stderr.strip()[-300:]}")
 
-        resolved = _run(["git", "rev-parse", "--verify", "--quiet", f"origin/{job.ref}^{{commit}}"], repo)
+        resolved = _run(["git", "rev-parse", "--verify", "--quiet", f"origin/{ref}^{{commit}}"], repo)
         sha = resolved.stdout.strip()
         if not sha:
             # Allow a tag or a full sha that exists locally after the fetch.
-            resolved = _run(["git", "rev-parse", "--verify", "--quiet", f"{job.ref}^{{commit}}"], repo)
+            resolved = _run(["git", "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"], repo)
             sha = resolved.stdout.strip()
         if not sha:
-            return self._failed(job, f"ref {job.ref!r} does not exist on origin")
+            return self._failed(job, f"ref {ref!r} does not exist on origin")
 
         # -fd, never -fdx: ignored files include the dump bundle, which must survive.
         _run(["git", "checkout", "--quiet", "--detach", sha], repo)
         _run(["git", "reset", "--quiet", "--hard", sha], repo)
         _run(["git", "clean", "--quiet", "-fd"], repo)
 
-        described = _run(["git", "log", "-1", "--format=%h %s"], repo).stdout.strip()
-        return Result(id=job.id, verb=job.verb, ok=True,
-                      detail={"ref": job.ref, "commit": sha, "subject": described})
+        self._synced_ref = ref
+        return None
+
+    @staticmethod
+    def _default_branch(repo: Path) -> str:
+        """origin's own default branch, or `main` if the clone never recorded one."""
+        head = _run(["git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"], repo)
+        name = head.stdout.strip()
+        return name.split("/", 1)[1] if name.startswith("origin/") else (name or "main")
 
     def do_refresh(self, job: Job, project: ProjectConfig, notebook: str) -> Result:
-        """Bring the notebook up to date: optionally sync, then dump, then load.
+        """Bring the notebook up to date: sync, then dump, then load.
 
-        A `ref` makes this the whole operation, which is what a caller almost always wants:
-        syncing without refreshing leaves the notebook on the old bundle, so the architect
-        is unaffected. Omitting `ref` dumps the tree as it stands -- the case that is
-        genuinely useful on its own is loading the *same* code into a *different* notebook.
-
-        Either way the result reports the commit that was dumped, so a stale tree is
-        visible rather than silent.
+        This is one operation and not three, because the parts are useless apart.
+        Syncing without refreshing leaves the notebook on the old bundle, so the
+        architect is entirely unaffected; refreshing without syncing rebuilds whatever
+        commit the clone was left on, and reports success while the architect answers
+        about the wrong tree. So a refresh always syncs, and always reports the commit
+        it dumped -- staleness is then visible rather than silent.
 
         The dump is driven from our own configuration rather than by running the repo's
         `dump.bat`: each entry is one invocation of the dump tool with a filter from the
         repository and an output name we chose. `--overwrite` is what advances the ordinal
         and removes the previous generation, so only one batch is ever left on disk.
         """
-        if job.ref:
-            synced = self.do_sync(job, project)
-            if not synced.ok:
-                return synced
+        failed = self.sync(job, project)
+        if failed is not None:
+            return failed
 
         produced: list[str] = []
         for entry in project.dump:
@@ -244,15 +267,16 @@ class Agent:
 
         loaded = _run(args, self.config.ops_repo, timeout=5400)
         envelope = _parse_envelope(loaded.stdout)
+        # The ref and the commit both go in the result: the ref because it may have been
+        # defaulted rather than asked for, the commit because that is what was dumped.
+        built = {"ref": self._synced_ref, "commit": _head_of(project.repo)}
         if loaded.returncode != 0:
             return Result(id=job.id, verb=job.verb, ok=False, exit_code=loaded.returncode,
                           error=(envelope.get("error") or {}).get("message", "load failed"),
                           hint=(envelope.get("error") or {}).get("hint"),
-                          detail={"envelope": envelope, "dumped": produced,
-                                  "commit": _head_of(project.repo)})
+                          detail={"envelope": envelope, "dumped": produced, **built})
         return Result(id=job.id, verb=job.verb, ok=True,
-                      detail={"envelope": envelope, "dumped": produced,
-                              "commit": _head_of(project.repo)})
+                      detail={"envelope": envelope, "dumped": produced, **built})
 
     def do_ask(self, job: Job, project: ProjectConfig, notebook: str) -> Result:
         """Ask the notebook. The caller chooses the question, never the notebook."""
@@ -329,19 +353,18 @@ class Agent:
             result.started = result.finished = started
             return result
 
-        # sync touches no notebook; every other verb needs one resolved and permitted.
+        # Every verb acts on a notebook, which must be one this project may touch.
         notebook: str | None = None
-        if job.verb != "sync":
-            try:
-                notebook = self.config.resolve_notebook(project, job.notebook)
-            except ConfigError as refused:
-                self.audit(job, "refused", str(refused))
-                result = self._failed(job, str(refused),
-                                      hint="pass --notebook, or widen the agent config")
-                result.started = result.finished = started
-                return result
+        try:
+            notebook = self.config.resolve_notebook(project, job.notebook)
+        except ConfigError as refused:
+            self.audit(job, "refused", str(refused))
+            result = self._failed(job, str(refused),
+                                  hint="pass --notebook, or widen the agent config")
+            result.started = result.finished = started
+            return result
 
-        handler = {"sync": self.do_sync, "refresh": self.do_refresh,
+        handler = {"refresh": self.do_refresh,
                    "ask": self.do_ask, "status": self.do_status}[job.verb]
         try:
             result = handler(job, project, notebook)

@@ -24,7 +24,14 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 
 #: The only verbs the agent will execute. Anything else is refused unread.
-VERBS = ("sync", "refresh", "ask", "status")
+VERBS = ("refresh", "ask", "status")
+
+#: Verbs that once existed, kept only so the refusal can say what replaced them. A
+#: caller working from older documentation gets an instruction rather than a puzzle.
+RETIRED_VERBS = {
+    "sync": "sync was folded into refresh, which now always syncs first; "
+            "use `refresh --ref <branch>`",
+}
 
 #: A git ref. Deliberately narrow: no spaces, no options, nothing that could be read as a
 #: flag by git, and no URL -- refs are resolved against the agent's configured origin, so a
@@ -128,16 +135,16 @@ def validate(job: Job) -> Job:
     stricter than they need to be: it is far easier to loosen one later than to discover
     that a field nobody thought about reached a subprocess.
     """
+    if job.verb in RETIRED_VERBS:
+        raise JobRejected(RETIRED_VERBS[job.verb])
     if job.verb not in VERBS:
         raise JobRejected(f"unknown verb {job.verb!r}; allowed: {', '.join(VERBS)}")
 
     if not job.id or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$", job.id):
         raise JobRejected("job id is missing or malformed")
 
-    if job.verb == "sync" and not job.ref:
-        raise JobRejected("sync requires a ref")
-
-    # `refresh` may carry a ref too, and it is checked exactly as strictly there.
+    # A ref is optional -- refresh without one syncs the project's default branch --
+    # but whenever one is present it is checked before it can reach git.
     if job.ref is not None:
         if not REF_PATTERN.match(job.ref):
             raise JobRejected(

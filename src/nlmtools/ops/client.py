@@ -3,8 +3,7 @@
 Deliberately dependency-free -- standard library and `git` only -- so a Claude cloud VM can
 run it with nothing installed and no network access beyond the git remote it already uses.
 
-    python client.py --ops-repo ~/nlm-ops sync --ref feature/my-branch
-    python client.py --ops-repo ~/nlm-ops refresh
+    python client.py --ops-repo ~/nlm-ops refresh --ref feature/my-branch
     python client.py --ops-repo ~/nlm-ops ask --question-file q.md --attach data.json
 
 Each call pushes one job file, then polls for the matching result file. The Windows agent
@@ -84,7 +83,7 @@ def build_job(args: argparse.Namespace) -> dict:
         job["project"] = args.project
     if args.notebook:
         job["notebook"] = args.notebook
-    if args.verb in ("sync", "refresh") and getattr(args, "ref", None):
+    if getattr(args, "ref", None):
         job["ref"] = args.ref
     elif args.verb == "ask":
         if args.question_file:
@@ -135,16 +134,12 @@ def main(argv: list[str] | None = None) -> int:
 
     verbs = parser.add_subparsers(dest="verb", required=True)
 
-    sync = verbs.add_parser("sync", parents=[common],
-                            help="check out a ref of the source repo on Windows")
-    sync.add_argument("--ref", required=True, help="branch, tag or commit on the origin")
-
     refresh = verbs.add_parser("refresh", parents=[common],
-                               help="sync, regenerate the bundle, and load it")
+                               help="sync the source repo, regenerate the bundle, load it")
     refresh.add_argument("--ref",
-                         help="check this branch, tag or commit out first -- almost always "
-                              "what you want. Omit it only to reload the tree as it stands, "
-                              "for instance into a different notebook")
+                         help="branch, tag or commit to check out on the always-on machine. "
+                              "Omitted, the project's default branch is used -- a refresh "
+                              "always syncs, so it can never rebuild a stale tree quietly")
     verbs.add_parser("status", parents=[common],
                      help="what is in the notebook and whether it is ready")
 

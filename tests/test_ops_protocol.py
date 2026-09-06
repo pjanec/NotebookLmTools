@@ -40,7 +40,7 @@ def test_parameterless_verbs_need_nothing(verb):
     "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0",
 ])
 def test_ordinary_refs_are_accepted(ref):
-    validate(job(verb="sync", ref=ref))
+    validate(job(verb="refresh", ref=ref))
 
 
 @pytest.mark.parametrize("ref", [
@@ -56,12 +56,19 @@ def test_ordinary_refs_are_accepted(ref):
 ])
 def test_refs_that_are_not_plain_names_are_refused(ref):
     with pytest.raises(JobRejected):
-        validate(job(verb="sync", ref=ref))
+        validate(job(verb="refresh", ref=ref))
 
 
-def test_sync_requires_a_ref():
-    with pytest.raises(JobRejected):
-        validate(job(verb="sync"))
+def test_a_refresh_needs_no_ref():
+    """Omitted, the project's default branch is synced. There is no unsynced mode."""
+    validate(job(verb="refresh"))
+
+
+def test_the_retired_sync_verb_says_what_replaced_it():
+    """A caller working from older documentation gets an instruction, not a puzzle."""
+    with pytest.raises(JobRejected) as caught:
+        validate(job(verb="sync", ref="main"))
+    assert "refresh --ref" in str(caught.value)
 
 
 # -- questions and attachments ------------------------------------------------------

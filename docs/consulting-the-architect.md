@@ -99,27 +99,22 @@ question of a session**, and after changing code the question is about:
 python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project <project> refresh --ref <branch>
 ```
 
-That is the whole operation: it checks the branch out on the always-on machine, regenerates
-the bundle and reloads the notebook. Refresh at natural boundaries — after a subsystem
-lands — not after every commit.
+**That one command is the whole operation.** It checks the branch out on the always-on
+machine, regenerates the bundle and reloads the notebook. There is no separate sync step and
+no way to rebuild without syncing. Omitting `--ref` uses the project's default branch, which
+is usually what you want anyway. Refresh at natural boundaries — after a subsystem lands —
+not after every commit.
 
 ⚠ **It only sees pushed commits.** The ref is resolved against `origin`, so work that is
 uncommitted, or committed but not pushed, is invisible to the architect however many times
-you refresh — and nothing reports this, because the refresh succeeds and rebuilds from a
-tree that is simply older than yours. **Push first.** The result reports the commit it
-actually dumped, which is the one place staleness becomes visible; check it if an answer
-looks out of date.
+you refresh — and nothing complains, because the refresh genuinely succeeds; it just builds
+a tree older than yours. **Push first.** The result reports the ref and the commit it
+actually dumped, which is where staleness becomes visible; check it if an answer looks out
+of date.
 
-`--ref` also means `git clean -fd` runs on that clone, so anything untracked there is
-discarded — the same reason a project's `.dumpfilter` files must be committed.
-
-**Omitting `--ref`** rebuilds from the tree as it stands, without fetching. That is worth
-doing in one situation: loading the *same* code into a *different* notebook. Otherwise pass
-the ref, because a refresh without one silently rebuilds whatever the machine last had.
-
-There is also a bare `sync` verb, which checks a ref out and stops. It is rarely useful on
-its own — syncing without refreshing leaves the notebook on the old bundle, so the architect
-does not change at all.
+A refresh also resets and cleans that clone, so anything untracked there is discarded —
+the same reason a project's `.dumpfilter` files must be committed. If someone has
+uncommitted work in it, the refresh **refuses** rather than destroying it, and says so.
 
 **Deciding whether it is stale enough to matter.** The decisive question is not *how much*
 has changed but **whether what changed is what you are asking about**:
