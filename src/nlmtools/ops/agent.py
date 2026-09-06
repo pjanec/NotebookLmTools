@@ -38,6 +38,10 @@ RESULTS_DIR = "results"
 #: that works from either machine, needing no access to the Windows box.
 PAUSE_FILE = "PAUSED"
 
+#: How hard to try to publish a result. Losing a push race with an incoming job is normal;
+#: giving up and leaving the caller waiting is not.
+PUSH_ATTEMPTS = 4
+
 
 def _run(args: list[str], cwd: Path, timeout: float = 1800) -> subprocess.CompletedProcess:
     """Run a child process. Never through a shell: every argument stays an argument."""
@@ -78,9 +82,31 @@ class Agent:
 
     # -- ops repo -----------------------------------------------------------------
 
-    def refresh_ops_repo(self) -> None:
-        _run(["git", "fetch", "--quiet", "origin"], self.config.ops_repo)
-        _run(["git", "reset", "--quiet", "--hard", "origin/main"], self.config.ops_repo)
+    def refresh_ops_repo(self) -> bool:
+        """Bring the local clone up to date **without discarding unpushed work**.
+
+        This used to `reset --hard origin/main`, which was wrong in a way that only shows
+        under contention: if a result had been committed but its push lost a race with an
+        incoming job, the reset threw that result away, the job looked pending again, and it
+        ran a second time. Harmless for `status`; an `ask` asked twice and a `refresh`
+        re-dumped and reloaded.
+
+        Rebasing preserves the local commit instead. If the rebase itself fails, we abort
+        and skip the pass rather than force the tree into line — repeating work is bad, and
+        silently destroying a result is worse.
+        """
+        repo = self.config.ops_repo
+        _run(["git", "fetch", "--quiet", "origin"], repo)
+
+        rebased = _run(["git", "rebase", "--quiet", "origin/main"], repo)
+        if rebased.returncode != 0:
+            _run(["git", "rebase", "--abort"], repo)
+            log.warning(
+                "could not rebase the ops repo onto origin/main; skipping this pass. "
+                "Resolve by hand in %s", repo,
+            )
+            return False
+        return True
 
     def publish(self, result: Result) -> None:
         self.results_dir.mkdir(parents=True, exist_ok=True)
@@ -88,12 +114,25 @@ class Agent:
         _run(["git", "add", f"{RESULTS_DIR}/{result.id}.json"], self.config.ops_repo)
         _run(["git", "commit", "--quiet", "-m", f"result {result.id} ({result.verb})"],
              self.config.ops_repo)
-        pushed = _run(["git", "push", "--quiet", "origin", "HEAD:main"], self.config.ops_repo)
-        if pushed.returncode != 0:
-            # Someone pushed a job while we were working. Rebase and try once more.
+        # Push with retries: losing a race with an incoming job is expected, not
+        # exceptional. A result that stays unpushed is the thing to avoid, because the
+        # caller is waiting for exactly this file.
+        for attempt in range(PUSH_ATTEMPTS):
+            pushed = _run(["git", "push", "--quiet", "origin", "HEAD:main"],
+                          self.config.ops_repo)
+            if pushed.returncode == 0:
+                return
             _run(["git", "fetch", "--quiet", "origin"], self.config.ops_repo)
-            _run(["git", "rebase", "--quiet", "origin/main"], self.config.ops_repo)
-            _run(["git", "push", "--quiet", "origin", "HEAD:main"], self.config.ops_repo)
+            rebased = _run(["git", "rebase", "--quiet", "origin/main"], self.config.ops_repo)
+            if rebased.returncode != 0:
+                _run(["git", "rebase", "--abort"], self.config.ops_repo)
+                break
+            time.sleep(attempt + 1)
+
+        log.error(
+            "could not publish result %s after %d attempts; it is committed locally and "
+            "will be pushed on the next successful pass", result.id, PUSH_ATTEMPTS,
+        )
 
     def pending(self) -> list[Path]:
         if not self.jobs_dir.is_dir():
@@ -306,7 +345,8 @@ class Agent:
 
     def poll_once(self) -> int:
         """One pass: fetch, run everything pending, publish. Returns jobs handled."""
-        self.refresh_ops_repo()
+        if not self.refresh_ops_repo():
+            return 0
         if (self.config.ops_repo / PAUSE_FILE).exists():
             log.info("paused: %s is present", PAUSE_FILE)
             return 0

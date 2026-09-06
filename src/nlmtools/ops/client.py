@@ -108,33 +108,54 @@ def main(argv: list[str] | None = None) -> int:
         description="Ask the Windows agent to do something, through a private git repo. "
                     "Nothing listens on either side.",
     )
-    parser.add_argument("--ops-repo", required=True,
+    # Common options are attached to the top level *and* to every verb, so both
+    # `--json status` and `status --json` work. Requiring one order would be a trap: the
+    # natural way to type it is after the verb, which is also what the documentation shows.
+    # SUPPRESS matters: without it the subparser's own default (None) would overwrite a
+    # value already given before the verb, so `--ops-repo X status` would lose X.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--ops-repo", default=argparse.SUPPRESS,
                         help="local clone of the private ops repository")
-    parser.add_argument("--timeout", type=float, default=3600,
+    common.add_argument("--timeout", type=float, default=argparse.SUPPRESS,
                         help="how long to wait for a result (default 3600s)")
-    parser.add_argument("--json", action="store_true", help="print the raw result")
-    parser.add_argument("--project",
+    common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
+                        help="print the raw result")
+    common.add_argument("--project", default=argparse.SUPPRESS,
                         help="which configured project to act on; required when the agent "
                              "serves more than one")
-    parser.add_argument("--notebook",
+    common.add_argument("--notebook", default=argparse.SUPPRESS,
                         help="which notebook to load into or ask; omit to reuse the one "
                              "last used for this project")
+    parser.set_defaults(ops_repo=None, timeout=None, json=False,
+                        project=None, notebook=None)
+
+    for argument in common._actions:  # noqa: SLF001 - mirror them onto the top level
+        if argument.dest != "help":
+            parser._add_action(argument)  # noqa: SLF001
 
     verbs = parser.add_subparsers(dest="verb", required=True)
 
-    sync = verbs.add_parser("sync", help="check out a ref of the source repo on Windows")
+    sync = verbs.add_parser("sync", parents=[common],
+                            help="check out a ref of the source repo on Windows")
     sync.add_argument("--ref", required=True, help="branch, tag or commit on the origin")
 
-    verbs.add_parser("refresh", help="regenerate the bundle and load it into NotebookLM")
-    verbs.add_parser("status", help="what is in the notebook and whether it is ready")
+    verbs.add_parser("refresh", parents=[common],
+                     help="regenerate the bundle and load it into NotebookLM")
+    verbs.add_parser("status", parents=[common],
+                     help="what is in the notebook and whether it is ready")
 
-    ask = verbs.add_parser("ask", help="ask the architect")
+    ask = verbs.add_parser("ask", parents=[common], help="ask the architect")
     ask.add_argument("--question", help="the question text")
     ask.add_argument("--question-file", help="read the question from a file")
     ask.add_argument("--attach", action="append", help="a text-like data file; repeatable")
     ask.add_argument("--name", help="short slug for the transcript")
 
     args = parser.parse_args(argv)
+    if not args.ops_repo:
+        raise SystemExit("--ops-repo is required (the local clone of the ops repository)")
+    if args.timeout is None:
+        args.timeout = 3600
+
     ops = Path(args.ops_repo).expanduser()
     if not (ops / ".git").is_dir():
         raise SystemExit(f"{ops} is not a git clone of the ops repository")

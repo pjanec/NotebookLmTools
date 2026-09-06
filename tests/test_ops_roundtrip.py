@@ -257,3 +257,47 @@ def test_remembering_is_per_project(ops, agent):
     beta = submit(ops["cloud"], Job(verb="status", project="beta"))
     agent.poll_once()
     assert result_for(ops["cloud"], beta)["detail"]["notebook"] == "beta notebook"
+
+
+def test_an_unpushed_result_survives_the_next_poll(ops, agent):
+    """The exactly-once bug, reproduced.
+
+    The agent used to `reset --hard origin/main` at the start of every pass. If a result
+    had been committed but its push lost a race with an incoming job, the reset discarded
+    it, the job looked pending again, and it ran a second time — an ask asked twice, a
+    refresh reloaded twice. Observed in the first live run: five executions for three jobs.
+    """
+    job_id = submit(ops["cloud"], Job(verb="status", project="alpha"))
+    agent.poll_once()
+
+    # Commit a result locally and deliberately do not push it, while the other side
+    # advances the branch — exactly the losing-race state.
+    stranded = Job(verb="status", project="alpha")
+    (agent.results_dir / f"{stranded.id}.json").write_text(
+        Result(id=stranded.id, verb="status", ok=True).to_json(), encoding="utf-8")
+    git("add", "-A", cwd=ops["windows"])
+    git("commit", "--quiet", "-m", f"result {stranded.id}", cwd=ops["windows"])
+    submit(ops["cloud"], Job(verb="refresh", project="alpha"))  # remote moves on
+
+    agent.poll_once()
+
+    assert (agent.results_dir / f"{stranded.id}.json").is_file(), \
+        "the unpushed result was discarded, so its job would run again"
+    assert result_for(ops["cloud"], job_id)["ok"] is True
+
+
+def test_each_job_is_executed_once_even_when_the_queue_moves(ops, agent):
+    """Several jobs arriving between passes must still each run exactly once."""
+    executions = []
+    original = agent.do_status
+    agent.do_status = lambda job, project, notebook: (
+        executions.append(job.id) or original(job, project, notebook))
+
+    ids = [submit(ops["cloud"], Job(verb="status", project="alpha")) for _ in range(3)]
+    agent.poll_once()
+    submit(ops["cloud"], Job(verb="status", project="alpha"))
+    agent.poll_once()
+    agent.poll_once()
+
+    for job_id in ids:
+        assert executions.count(job_id) == 1, f"{job_id} ran {executions.count(job_id)} times"

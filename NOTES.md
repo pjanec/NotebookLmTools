@@ -571,3 +571,32 @@ failure* produced the error they expected. Under the venv, `status` on a missing
 correctly succeeds and both tests failed. They now provoke a genuine offline failure (an
 empty local folder) instead. **Run the suite with `.venv\Scripts\python.exe`** — the
 system interpreter cannot exercise anything that touches the library.
+
+## 2026-09-06 — the ops queue, first run against real GitHub
+
+A `status` job pushed by the client came back with a complete result: notebook resolved,
+`exists: true`, about ten seconds of work, and a clean queue afterwards — three jobs, three
+results, no duplicate commits.
+
+**The audit log showed five executions for three jobs.**
+
+`refresh_ops_repo` began each pass with `git reset --hard origin/main`. When the agent had
+committed a result but its push lost a race with an incoming job, the reset discarded that
+result; the job then looked pending again and ran a second time. Harmless for `status`, a
+read. An `ask` would have asked twice — cost, and two transcripts. A `refresh` would have
+re-dumped and reloaded, minutes of work and a second delete-and-add of every source.
+
+The local round-trip tests asserted exactly-once and passed throughout, because nothing in
+them ever pushed *while the agent was working*. The bug needed contention, and only the live
+run had it.
+
+**Fixed** by rebasing rather than resetting, so unpushed work survives; retrying the push up
+to four times, since losing a race is normal rather than exceptional; and skipping the pass
+entirely when a rebase cannot be resolved — repeating work is bad, silently destroying a
+result is worse. Two tests now reproduce it: one stages the exact losing-race state, the
+other checks each job runs once while the queue keeps moving.
+
+Also fixed while testing: the client required `--json` and friends *before* the verb, while
+the documentation showed `status --json` — the order anyone would actually type. Common
+options are now accepted in either position, using `argparse.SUPPRESS` so the subparser's
+default cannot overwrite a value given earlier.

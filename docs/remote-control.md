@@ -123,12 +123,17 @@ with nothing installed.
 ### A job's life
 
 1. The client pushes `jobs/<id>.json`.
-2. The agent fetches and skips anything that already has a result, so execution is
-   exactly-once as long as one agent runs.
+2. The agent fetches — **rebasing, never resetting** — and skips anything that already has
+   a result, so execution is exactly-once as long as one agent runs. The distinction is not
+   academic: an earlier version reset the clone to the remote at the start of each pass, and
+   a result whose push had lost a race with an incoming job was discarded, so the job ran
+   again. The first live run showed five executions for three jobs.
 3. It validates, resolves the project and notebook, and refuses **with a result** rather
    than with silence — silence would leave the caller waiting out its whole timeout.
 4. It executes, one job at a time.
-5. It publishes `results/<id>.json`, rebasing if the other side pushed meanwhile.
+5. It publishes `results/<id>.json`, retrying the push and rebasing between attempts —
+   losing a race with an incoming job is normal, and a result that stays unpushed leaves the
+   caller waiting for exactly that file.
 6. Every job is appended to the audit log, **including refusals** — a rejected attempt is
    exactly what you want to find when reviewing later.
 
