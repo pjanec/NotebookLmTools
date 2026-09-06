@@ -421,3 +421,19 @@ def test_a_refresh_refuses_to_clobber_uncommitted_work(ops, agent, tmp_path):
     assert result["ok"] is False
     assert "uncommitted" in result["error"]
     assert (source / "seed.txt").read_text(encoding="utf-8") == "work in progress\n"
+
+
+def test_the_agent_publishes_a_matching_client(ops, agent):
+    """The cloud side clones the ops repo; an older client is how a caller uses a dead verb."""
+    from nlmtools.ops import client as client_module
+
+    assert agent.publish_client() is True
+    published = ops["windows"] / "client.py"
+    assert published.read_text(encoding="utf-8") == \
+        Path(client_module.__file__).read_text(encoding="utf-8")
+
+    # Idempotent: an unchanged client makes no commit, so the log stays readable.
+    assert agent.publish_client() is False
+
+    subprocess.run(["git", "pull", "--quiet", "--rebase"], cwd=ops["cloud"], check=True)
+    assert (ops["cloud"] / "client.py").is_file()

@@ -26,6 +26,7 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import client
 from .config import AgentConfig, ConfigError, ProjectConfig
 from .protocol import Job, JobRejected, Result, safe_attachment_name, validate
 
@@ -383,10 +384,35 @@ class Agent:
         self.audit(job, "ok" if result.ok else "failed", result.error or "")
         return result
 
+    def publish_client(self) -> bool:
+        """Keep a copy of `client.py` in the ops repo, matching this agent.
+
+        The cloud side clones the ops repo and needs the client; fetching it separately is
+        one more thing to get wrong, and a client older than the agent is exactly how a
+        caller ends up using a verb that no longer exists. The agent already pushes here,
+        so it publishes the client it is compatible with. Returns True if it changed.
+        """
+        source = Path(client.__file__).read_text(encoding="utf-8")
+        target = self.config.ops_repo / "client.py"
+        if target.is_file() and target.read_text(encoding="utf-8") == source:
+            return False
+
+        target.write_text(source, encoding="utf-8")
+        _run(["git", "add", "client.py"], self.config.ops_repo)
+        _run(["git", "commit", "--quiet", "-m",
+              "client.py: publish the copy matching the agent"], self.config.ops_repo)
+        pushed = _run(["git", "push", "--quiet", "origin", "HEAD:main"], self.config.ops_repo)
+        if pushed.returncode != 0:
+            log.warning("published client.py locally; the push will follow on a later pass")
+        else:
+            log.info("published client.py to the ops repo")
+        return True
+
     def poll_once(self) -> int:
         """One pass: fetch, run everything pending, publish. Returns jobs handled."""
         if not self.refresh_ops_repo():
             return 0
+        self.publish_client()
         if (self.config.ops_repo / PAUSE_FILE).exists():
             log.info("paused: %s is present", PAUSE_FILE)
             return 0

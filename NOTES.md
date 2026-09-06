@@ -713,3 +713,11 @@ copy, and a sync hard-resets and cleans it. Under the old split that only happen
 someone explicitly asked for a ref; now every refresh does it. So a sync refuses outright
 when the tree has uncommitted changes, naming the first few, instead of destroying an
 afternoon's work. Gitignored files -- the `.dumps` bundle among them -- do not count.
+
+**The agent publishes `client.py` into the ops repo.** The guide told the cloud VM to run
+`~/nlm-ops/client.py`; no such file was there. It had worked only because the session was
+handed the file another way. Fetching the client separately is one more thing to get wrong,
+and a client older than the agent is precisely how a caller comes to send a verb that no
+longer exists — which this change made possible for the first time. So each pass copies the
+client the agent itself imports into the ops repo and pushes it when it differs. Cloning the
+queue now gets a client that speaks the same protocol, and `git pull` updates it.

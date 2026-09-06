@@ -74,6 +74,9 @@ python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project <project> \
     --notebook "<notebook>" ask --question-file <question>.md
 ```
 
+`client.py` comes with that clone — the agent publishes the copy matching itself, so a
+`git pull` in `~/nlm-ops` is also how you update it. It needs nothing but Python and `git`.
+
 `--attach <file>` adds a text-like data file the question refers to; repeatable. Omit
 `--notebook` to reuse whichever was last used for that project.
 
