@@ -397,7 +397,9 @@ class Agent:
         if target.is_file() and target.read_text(encoding="utf-8") == source:
             return False
 
-        target.write_text(source, encoding="utf-8")
+        # write_bytes, so the published copy keeps the LF endings read_text gave us:
+        # the reader is a Linux VM, and write_text would translate them on Windows.
+        target.write_bytes(source.encode("utf-8"))
         _run(["git", "add", "client.py"], self.config.ops_repo)
         _run(["git", "commit", "--quiet", "-m",
               "client.py: publish the copy matching the agent"], self.config.ops_repo)
