@@ -192,13 +192,26 @@ class Agent:
                       detail={"ref": job.ref, "commit": sha, "subject": described})
 
     def do_refresh(self, job: Job, project: ProjectConfig, notebook: str) -> Result:
-        """Regenerate the bundle and load it. The caller supplies nothing but the project.
+        """Bring the notebook up to date: optionally sync, then dump, then load.
+
+        A `ref` makes this the whole operation, which is what a caller almost always wants:
+        syncing without refreshing leaves the notebook on the old bundle, so the architect
+        is unaffected. Omitting `ref` dumps the tree as it stands -- the case that is
+        genuinely useful on its own is loading the *same* code into a *different* notebook.
+
+        Either way the result reports the commit that was dumped, so a stale tree is
+        visible rather than silent.
 
         The dump is driven from our own configuration rather than by running the repo's
         `dump.bat`: each entry is one invocation of the dump tool with a filter from the
         repository and an output name we chose. `--overwrite` is what advances the ordinal
         and removes the previous generation, so only one batch is ever left on disk.
         """
+        if job.ref:
+            synced = self.do_sync(job, project)
+            if not synced.ok:
+                return synced
+
         produced: list[str] = []
         for entry in project.dump:
             filter_path = project.repo / entry.filter
@@ -235,9 +248,11 @@ class Agent:
             return Result(id=job.id, verb=job.verb, ok=False, exit_code=loaded.returncode,
                           error=(envelope.get("error") or {}).get("message", "load failed"),
                           hint=(envelope.get("error") or {}).get("hint"),
-                          detail={"envelope": envelope, "dumped": produced})
+                          detail={"envelope": envelope, "dumped": produced,
+                                  "commit": _head_of(project.repo)})
         return Result(id=job.id, verb=job.verb, ok=True,
-                      detail={"envelope": envelope, "dumped": produced})
+                      detail={"envelope": envelope, "dumped": produced,
+                              "commit": _head_of(project.repo)})
 
     def do_ask(self, job: Job, project: ProjectConfig, notebook: str) -> Result:
         """Ask the notebook. The caller chooses the question, never the notebook."""
@@ -377,6 +392,12 @@ class Agent:
             except Exception as error:  # noqa: BLE001 - a poll failure must not end the agent
                 log.warning("poll failed: %s: %s", type(error).__name__, error)
             time.sleep(self.config.poll_seconds)
+
+
+def _head_of(repo: Path) -> str:
+    """What commit the bundle was built from. Reported so staleness is visible."""
+    described = _run(["git", "log", "-1", "--format=%h %s"], repo)
+    return described.stdout.strip() if described.returncode == 0 else "unknown"
 
 
 def _parse_envelope(stdout: str) -> dict:

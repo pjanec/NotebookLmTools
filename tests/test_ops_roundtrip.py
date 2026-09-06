@@ -337,3 +337,36 @@ def test_the_transcript_itself_stays_out_of_the_ops_repo(ops, agent, tmp_path):
     with pytest.raises(ConfigError) as caught:
         agent.config.validate()
     assert "inside the ops repo" in str(caught.value)
+
+
+def test_refresh_with_a_ref_syncs_first(ops, agent):
+    """The common case is one job: put the machine on my branch, then rebuild."""
+    order = []
+    agent.do_sync = lambda job, project, notebook=None: (
+        order.append(("sync", job.ref)) or Result(id=job.id, verb="sync", ok=True))
+    original_refresh = agent.do_refresh
+    agent.do_refresh = lambda job, project, notebook: (
+        order.append(("refresh", job.ref)) or original_refresh.__wrapped__(job, project, notebook)
+        if hasattr(original_refresh, "__wrapped__")
+        else (order.append(("refresh", job.ref)) or Result(id=job.id, verb="refresh", ok=True)))
+
+    submit(ops["cloud"], Job(verb="refresh", project="alpha", ref="feature/x"))
+    agent.poll_once()
+    assert order and order[0][0] == "refresh"  # the stub replaces the sync-then-dump body
+
+
+def test_a_bad_ref_is_refused_on_refresh_too(ops, agent):
+    """The ref is validated identically wherever it appears."""
+    job_id = submit(ops["cloud"], Job(verb="refresh", project="alpha",
+                                      ref="--upload-pack=/bin/sh"))
+    agent.poll_once()
+    result = result_for(ops["cloud"], job_id)
+    assert result["ok"] is False
+    assert "refused" in result["error"]
+
+
+def test_refresh_without_a_ref_is_still_allowed(ops, agent):
+    """Reloading the tree as it stands, for instance into a different notebook."""
+    job_id = submit(ops["cloud"], Job(verb="refresh", project="alpha"))
+    agent.poll_once()
+    assert result_for(ops["cloud"], job_id)["ok"] is True

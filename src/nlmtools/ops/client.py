@@ -84,7 +84,7 @@ def build_job(args: argparse.Namespace) -> dict:
         job["project"] = args.project
     if args.notebook:
         job["notebook"] = args.notebook
-    if args.verb == "sync":
+    if args.verb in ("sync", "refresh") and getattr(args, "ref", None):
         job["ref"] = args.ref
     elif args.verb == "ask":
         if args.question_file:
@@ -139,8 +139,12 @@ def main(argv: list[str] | None = None) -> int:
                             help="check out a ref of the source repo on Windows")
     sync.add_argument("--ref", required=True, help="branch, tag or commit on the origin")
 
-    verbs.add_parser("refresh", parents=[common],
-                     help="regenerate the bundle and load it into NotebookLM")
+    refresh = verbs.add_parser("refresh", parents=[common],
+                               help="sync, regenerate the bundle, and load it")
+    refresh.add_argument("--ref",
+                         help="check this branch, tag or commit out first -- almost always "
+                              "what you want. Omit it only to reload the tree as it stands, "
+                              "for instance into a different notebook")
     verbs.add_parser("status", parents=[common],
                      help="what is in the notebook and whether it is ready")
 

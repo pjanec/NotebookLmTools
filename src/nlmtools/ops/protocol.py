@@ -134,9 +134,11 @@ def validate(job: Job) -> Job:
     if not job.id or not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$", job.id):
         raise JobRejected("job id is missing or malformed")
 
-    if job.verb == "sync":
-        if not job.ref:
-            raise JobRejected("sync requires a ref")
+    if job.verb == "sync" and not job.ref:
+        raise JobRejected("sync requires a ref")
+
+    # `refresh` may carry a ref too, and it is checked exactly as strictly there.
+    if job.ref is not None:
         if not REF_PATTERN.match(job.ref):
             raise JobRejected(
                 f"ref {job.ref!r} is not a plain ref name. A ref is resolved against the "

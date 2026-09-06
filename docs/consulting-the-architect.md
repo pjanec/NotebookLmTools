@@ -96,20 +96,30 @@ The architect reads a snapshot, not your working tree. Refresh it **before the f
 question of a session**, and after changing code the question is about:
 
 ```
-python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project <project> sync --ref <branch>
-python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project <project> refresh
+python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project <project> refresh --ref <branch>
 ```
 
-`sync` puts the always-on machine's working copy on the ref you name, so that `refresh`
-dumps *your* code rather than whatever that clone was last sitting on; `refresh` then
-regenerates the bundle and reloads it. Refresh at natural boundaries — after a subsystem
+That is the whole operation: it checks the branch out on the always-on machine, regenerates
+the bundle and reloads the notebook. Refresh at natural boundaries — after a subsystem
 lands — not after every commit.
 
-⚠ **`sync` resolves the ref against `origin`, so it only sees pushed commits.** Work that is
+⚠ **It only sees pushed commits.** The ref is resolved against `origin`, so work that is
 uncommitted, or committed but not pushed, is invisible to the architect however many times
-you refresh — and nothing reports this, because the sync succeeds and dumps a tree that is
-simply older than yours. Push first, then sync. It also takes a ref name, never a URL, and
-`git clean -fd` runs afterwards, so anything untracked in that clone is discarded.
+you refresh — and nothing reports this, because the refresh succeeds and rebuilds from a
+tree that is simply older than yours. **Push first.** The result reports the commit it
+actually dumped, which is the one place staleness becomes visible; check it if an answer
+looks out of date.
+
+`--ref` also means `git clean -fd` runs on that clone, so anything untracked there is
+discarded — the same reason a project's `.dumpfilter` files must be committed.
+
+**Omitting `--ref`** rebuilds from the tree as it stands, without fetching. That is worth
+doing in one situation: loading the *same* code into a *different* notebook. Otherwise pass
+the ref, because a refresh without one silently rebuilds whatever the machine last had.
+
+There is also a bare `sync` verb, which checks a ref out and stops. It is rarely useful on
+its own — syncing without refreshing leaves the notebook on the old bundle, so the architect
+does not change at all.
 
 **Deciding whether it is stale enough to matter.** The decisive question is not *how much*
 has changed but **whether what changed is what you are asking about**:
