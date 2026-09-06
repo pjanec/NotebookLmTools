@@ -6,8 +6,7 @@ repository, its own notebooks — reachable from a Claude cloud VM.
 Steps are grouped by **where** you do them. Most of the work is on the Windows machine, and
 the only genuinely new thinking is step 2: deciding how to slice the corpus.
 
-- [`remote-control-design.md`](remote-control-design.md) — why it is built this way
-- [`remote-control-setup.md`](remote-control-setup.md) — installing the queue, once per machine
+- [`remote-control.md`](remote-control.md) — the design, the trust boundary, and installing the queue
 - [`bootstrap-new-machine.md`](bootstrap-new-machine.md) — installing the tools, once per machine
 
 ---
@@ -27,7 +26,7 @@ Two exceptions:
   its own config.
 
 **No new PAT is needed for a new project** in the normal case. If you are creating the ops
-repo for the first time, that is in [`remote-control-setup.md`](remote-control-setup.md).
+repo for the first time, that is in [`remote-control.md`](remote-control.md).
 
 ---
 
