@@ -115,9 +115,12 @@ In `ops-agent.json`, add one entry under `projects`:
 
 Getting these right matters more than it looks:
 
-- **`masks` must cover every `dump` output prefix.** Add a slice with a new prefix and
-  forget the mask, and that source is uploaded but never replaced on the next refresh —
-  it goes stale silently while everything else updates. This is the mistake to expect.
+- **`masks` must cover every `dump` output prefix.** Masks gate what is *selected*, so a
+  dump output whose prefix is missing is never uploaded at all: the slice simply does not
+  exist in the notebook, and the architect answers as though that part of the codebase were
+  not there. The load reports success, because from its point of view nothing went wrong.
+  Check `counts.selected` against the number of files the dump produced — that is the one
+  number that catches it.
 - **`notebook_prefix`** decides which notebooks this project may touch. Name a project's
   notebooks with a common prefix and new architectural areas need no config change, while a
   leaked ops token still cannot reach another project's notebook.
@@ -228,5 +231,6 @@ or let a load create it, and pass `--notebook`. Provided the name matches the pr
 | `notebook ... is not allowed` | it falls outside `notebook_prefix` / `allowed_notebooks` |
 | `origin is ... expected ...` | the clone's remote does not match the configured origin |
 | `filter ... is missing` | the filter file is not on the currently synced ref |
-| a source is never refreshed | its prefix is missing from `masks` — the silent one |
+| a slice is missing from the notebook | its prefix is missing from `masks`, so it was never uploaded |
+| a source is stale while others update | its prefix was *removed* from `masks` after it was loaded, so it is neither replaced nor deleted |
 | no result at all | the agent is stopped, or `PAUSED` is present in the ops repo |
