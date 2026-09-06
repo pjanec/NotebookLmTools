@@ -4,6 +4,10 @@ How a Linux cloud session asks the always-on Windows machine to sync a branch, r
 NotebookLM bundle, or put a question to the architect — **without anything on the Windows
 machine listening to the internet.**
 
+This is the one-time installation. See [`remote-control-design.md`](remote-control-design.md)
+for why it is built this way, and [`onboarding-a-project.md`](onboarding-a-project.md) for
+adding a project once this is running.
+
 ```
    Claude cloud VM                private git repo               Windows always-on
    (Linux, ephemeral)              (github, private)             (holds the credentials)

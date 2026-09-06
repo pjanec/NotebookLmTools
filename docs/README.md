@@ -8,6 +8,8 @@ Two documents, with different standing. Do not confuse them.
 | `design.md` | **Living.** Kept in sync with the implementation. | **Authoritative.** Where it differs from the brief, it wins. |
 | `bootstrap-new-machine.md` | Procedure. | Installing and **verifying** on a new Windows machine, written to be followed by an agent. Ends in a live end-to-end check. |
 | `google-oauth-setup.md` | Procedure. | The one-time Google Cloud step, written from an actual run through the console. |
+| `remote-control-design.md` | **Design.** | How the cloud VM drives the Windows machine, and why a git queue rather than a service. Read before changing the ops layer. |
+| `onboarding-a-project.md` | Procedure. | Adding a new project to a working installation: what to do on GitHub, on Windows, and on the cloud VM. |
 | `remote-control-setup.md` | Procedure + threat model. | Driving the Windows machine from a Claude cloud VM through a private git queue, with nothing listening on either side. |
 | `refreshing-the-bundle-guide.md` | Operator-facing. | When the architect's snapshot has drifted too far from the working copy, and how to replace it. Companion to the guide below. |
 | `ask-the-architect-guide.md` | Operator-authored. | Drop-in guidance for a consuming project's `CLAUDE.md`: how an AI agent should consult the notebook, and why it must verify every claim against the code. |
