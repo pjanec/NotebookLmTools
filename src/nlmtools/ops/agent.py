@@ -65,6 +65,7 @@ class Agent:
         line = json.dumps({
             "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "id": job.id, "verb": job.verb, "ref": job.ref, "project": job.project,
+            "notebook": job.notebook,
             "question_chars": len(job.question or ""),
             "attachments": [a.name for a in job.attachments],
             "outcome": outcome, "detail": detail[:400],
@@ -102,7 +103,7 @@ class Agent:
 
     # -- verbs --------------------------------------------------------------------
 
-    def do_sync(self, job: Job, project: ProjectConfig) -> Result:
+    def do_sync(self, job: Job, project: ProjectConfig, notebook: str | None = None) -> Result:
         """Check out a ref of the project's repository.
 
         The ref is resolved against the agent's own origin. A caller supplies a name, never
@@ -151,7 +152,7 @@ class Agent:
         return Result(id=job.id, verb=job.verb, ok=True,
                       detail={"ref": job.ref, "commit": sha, "subject": described})
 
-    def do_refresh(self, job: Job, project: ProjectConfig) -> Result:
+    def do_refresh(self, job: Job, project: ProjectConfig, notebook: str) -> Result:
         """Regenerate the bundle and load it. The caller supplies nothing but the project.
 
         The dump is driven from our own configuration rather than by running the repo's
@@ -183,7 +184,7 @@ class Agent:
             produced.append(entry.output)
 
         args = [self.config.nlmt, "load",
-                "--notebook", project.notebook,
+                "--notebook", notebook,
                 "--local-folder", str(project.bundle_folder),
                 "--project", project.drive_project, "--json"]
         for mask in project.masks:
@@ -199,7 +200,7 @@ class Agent:
         return Result(id=job.id, verb=job.verb, ok=True,
                       detail={"envelope": envelope, "dumped": produced})
 
-    def do_ask(self, job: Job, project: ProjectConfig) -> Result:
+    def do_ask(self, job: Job, project: ProjectConfig, notebook: str) -> Result:
         """Ask the notebook. The caller chooses the question, never the notebook."""
         scratch = self.config.ops_repo / ".scratch" / job.id
         scratch.mkdir(parents=True, exist_ok=True)
@@ -208,7 +209,7 @@ class Agent:
             question_file.write_text(job.question or "", encoding="utf-8")
 
             args = [self.config.nlmt, "ask",
-                    "--notebook", project.notebook,
+                    "--notebook", notebook,
                     "--question-file", str(question_file),
                     "--project", project.drive_project, "--json"]
             if job.name:
@@ -238,8 +239,8 @@ class Agent:
                 leftover.unlink(missing_ok=True)
             scratch.rmdir()
 
-    def do_status(self, job: Job, project: ProjectConfig) -> Result:
-        args = [self.config.nlmt, "status", "--notebook", project.notebook, "--json"]
+    def do_status(self, job: Job, project: ProjectConfig, notebook: str) -> Result:
+        args = [self.config.nlmt, "status", "--notebook", notebook, "--json"]
         checked = _run(args, self.config.ops_repo, timeout=600)
         envelope = _parse_envelope(checked.stdout)
         return Result(id=job.id, verb=job.verb, ok=checked.returncode == 0,
@@ -272,10 +273,22 @@ class Agent:
             result.started = result.finished = started
             return result
 
+        # sync touches no notebook; every other verb needs one resolved and permitted.
+        notebook: str | None = None
+        if job.verb != "sync":
+            try:
+                notebook = self.config.resolve_notebook(project, job.notebook)
+            except ConfigError as refused:
+                self.audit(job, "refused", str(refused))
+                result = self._failed(job, str(refused),
+                                      hint="pass --notebook, or widen the agent config")
+                result.started = result.finished = started
+                return result
+
         handler = {"sync": self.do_sync, "refresh": self.do_refresh,
                    "ask": self.do_ask, "status": self.do_status}[job.verb]
         try:
-            result = handler(job, project)
+            result = handler(job, project, notebook)
         except subprocess.TimeoutExpired as expired:
             result = self._failed(job, f"timed out after {expired.timeout}s")
         except Exception as error:  # noqa: BLE001 - the agent reports, never dies
@@ -283,6 +296,11 @@ class Agent:
 
         result.started = started
         result.finished = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        if notebook:
+            result.detail.setdefault("notebook", notebook)
+            if result.ok:
+                # Remember it so the next job may omit the name.
+                self.config.remember_notebook(project.name, notebook)
         self.audit(job, "ok" if result.ok else "failed", result.error or "")
         return result
 

@@ -82,6 +82,8 @@ def build_job(args: argparse.Namespace) -> dict:
     }
     if args.project:
         job["project"] = args.project
+    if args.notebook:
+        job["notebook"] = args.notebook
     if args.verb == "sync":
         job["ref"] = args.ref
     elif args.verb == "ask":
@@ -114,6 +116,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--project",
                         help="which configured project to act on; required when the agent "
                              "serves more than one")
+    parser.add_argument("--notebook",
+                        help="which notebook to load into or ask; omit to reuse the one "
+                             "last used for this project")
 
     verbs = parser.add_subparsers(dest="verb", required=True)
 

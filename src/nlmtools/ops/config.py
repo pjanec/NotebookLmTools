@@ -52,14 +52,30 @@ class DumpEntry:
 
 @dataclass
 class ProjectConfig:
+    """One repository, its dump recipe, and which notebooks it may feed.
+
+    A project has **many** notebooks -- typically one per architectural area -- so the
+    notebook is chosen per job rather than fixed here. What is fixed here is which names
+    are acceptable, so a job cannot reach a notebook belonging to another project.
+    """
+
     name: str
     repo: Path
-    notebook: str
     drive_project: str
     masks: list[str]
     dump: list[DumpEntry]
     origin: str | None = None       # if set, the repo's origin must match before syncing
     allowed_refs: list[str] = field(default_factory=list)  # empty means any ref on origin
+
+    #: Notebooks this project may touch. A prefix is the practical guard: name notebooks
+    #: for a project consistently and new ones need no config change, while a leaked ops
+    #: token still cannot query another project's notebook. Leave both unset to allow any
+    #: name -- convenient, and fine when the account holds only one project's notebooks.
+    notebook_prefix: str | None = None
+    allowed_notebooks: list[str] = field(default_factory=list)
+
+    #: Used when a job names no notebook and none has been used yet.
+    default_notebook: str | None = None
 
     @property
     def bundle_folder(self) -> Path:
@@ -73,8 +89,11 @@ class ProjectConfig:
             raise ConfigError(f"{self.name}: repo {self.repo} does not exist")
         if not (self.repo / ".git").exists():
             raise ConfigError(f"{self.name}: repo {self.repo} is not a git clone")
-        if not self.notebook.strip():
-            raise ConfigError(f"{self.name}: notebook is required")
+        if self.default_notebook is not None and not self.notebook_allowed(self.default_notebook):
+            raise ConfigError(
+                f"{self.name}: default_notebook {self.default_notebook!r} is not allowed "
+                "by this project's own notebook rules"
+            )
         if not self.masks:
             raise ConfigError(
                 f"{self.name}: at least one mask is required — an empty mask set would let "
@@ -88,6 +107,21 @@ class ProjectConfig:
     def ref_allowed(self, ref: str) -> bool:
         return not self.allowed_refs or ref in self.allowed_refs
 
+    def notebook_allowed(self, notebook: str) -> bool:
+        if self.allowed_notebooks:
+            return notebook in self.allowed_notebooks
+        if self.notebook_prefix:
+            return notebook.startswith(self.notebook_prefix)
+        return True
+
+    def notebook_rule(self) -> str:
+        """How to explain a refusal, in the operator's own terms."""
+        if self.allowed_notebooks:
+            return "one of: " + ", ".join(repr(n) for n in self.allowed_notebooks)
+        if self.notebook_prefix:
+            return f"a name starting with {self.notebook_prefix!r}"
+        return "any name"
+
 
 @dataclass
 class AgentConfig:
@@ -98,6 +132,51 @@ class AgentConfig:
     projects: dict[str, ProjectConfig]
     poll_seconds: int = 20
     audit_log: Path | None = None
+
+    #: Remembers the notebook last used per project, so a job may omit it. Purely a
+    #: convenience: delete the file and the only consequence is that the next job must
+    #: name its notebook again.
+    state_file: Path | None = None
+
+    def last_notebook(self, project: str) -> str | None:
+        if not self.state_file or not self.state_file.is_file():
+            return None
+        try:
+            return (json.loads(self.state_file.read_text(encoding="utf-8"))
+                    .get("last_notebook", {}).get(project))
+        except (OSError, ValueError):
+            return None
+
+    def remember_notebook(self, project: str, notebook: str) -> None:
+        if not self.state_file:
+            return
+        try:
+            state = json.loads(self.state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {}
+        state.setdefault("last_notebook", {})[project] = notebook
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+        self.state_file.write_text(json.dumps(state, indent=2, sort_keys=True),
+                                   encoding="utf-8")
+
+    def resolve_notebook(self, project: ProjectConfig, asked: str | None) -> str:
+        """Which notebook a job means.
+
+        Explicit beats remembered beats configured default. A refusal names every way out,
+        because the caller cannot see the agent's configuration.
+        """
+        chosen = asked or self.last_notebook(project.name) or project.default_notebook
+        if not chosen:
+            raise ConfigError(
+                f"{project.name}: no notebook given and none remembered yet. Name one with "
+                "--notebook, or set default_notebook in the agent config."
+            )
+        if not project.notebook_allowed(chosen):
+            raise ConfigError(
+                f"{project.name}: notebook {chosen!r} is not allowed; this project accepts "
+                f"{project.notebook_rule()}"
+            )
+        return chosen
 
     @classmethod
     def from_file(cls, path: Path) -> "AgentConfig":
@@ -115,13 +194,15 @@ class AgentConfig:
                 projects[name] = ProjectConfig(
                     name=name,
                     repo=Path(raw["repo"]),
-                    notebook=raw["notebook"],
                     drive_project=raw.get("drive_project", name),
                     masks=list(raw["masks"]),
                     dump=[DumpEntry(filter=d["filter"], output=d["output"])
                           for d in raw["dump"]],
                     origin=raw.get("origin"),
                     allowed_refs=list(raw.get("allowed_refs") or []),
+                    notebook_prefix=raw.get("notebook_prefix"),
+                    allowed_notebooks=list(raw.get("allowed_notebooks") or []),
+                    default_notebook=raw.get("default_notebook"),
                 )
             config = cls(
                 ops_repo=Path(data["ops_repo"]),
@@ -131,6 +212,8 @@ class AgentConfig:
                 projects=projects,
                 poll_seconds=int(data.get("poll_seconds", 20)),
                 audit_log=Path(data["audit_log"]) if data.get("audit_log") else None,
+                state_file=Path(data["state_file"]) if data.get("state_file")
+                else Path(path).with_name("ops-agent-state.json"),
             )
         except KeyError as error:
             raise ConfigError(f"{path} is missing required field {error}") from error

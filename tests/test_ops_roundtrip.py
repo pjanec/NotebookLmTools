@@ -64,9 +64,9 @@ def make_project(name: str, root: Path) -> ProjectConfig:
     repo = root / name
     (repo / ".git").mkdir(parents=True, exist_ok=True)
     return ProjectConfig(
-        name=name, repo=repo, notebook=f"{name} notebook",
-        drive_project=name, masks=["HROT.", "FDP."],
+        name=name, repo=repo, drive_project=name, masks=["HROT.", "FDP."],
         dump=[DumpEntry(filter="dmp-a.dumpfilter", output="A.txt")],
+        default_notebook=f"{name} notebook",
     )
 
 
@@ -80,29 +80,39 @@ def agent(ops, tmp_path):
         dump_tool=tmp_path / "dump.py",
         projects={name: make_project(name, tmp_path) for name in ("alpha", "beta")},
         audit_log=tmp_path / "audit.jsonl",
+        state_file=tmp_path / "state.json",
     )
     built = Agent(config)
     # Stub the verbs: the transport is what is under test here.
-    built.do_refresh = lambda job, project: Result(
-        id=job.id, verb=job.verb, ok=True, detail={"notebook": project.notebook})
-    built.do_status = lambda job, project: Result(
-        id=job.id, verb=job.verb, ok=True, detail={"notebook": project.notebook})
-    built.do_ask = lambda job, project: Result(
+    built.do_refresh = lambda job, project, notebook: Result(
+        id=job.id, verb=job.verb, ok=True, detail={"notebook": notebook})
+    built.do_status = lambda job, project, notebook: Result(
+        id=job.id, verb=job.verb, ok=True, detail={"notebook": notebook})
+    built.do_ask = lambda job, project, notebook: Result(
         id=job.id, verb=job.verb, ok=True,
-        answer=f"answer to: {job.question}", detail={"notebook": project.notebook})
-    built.do_sync = lambda job, project: Result(
-        id=job.id, verb=job.verb, ok=True,
-        detail={"ref": job.ref, "notebook": project.notebook})
+        answer=f"answer to: {job.question}", detail={"notebook": notebook})
+    built.do_sync = lambda job, project, notebook=None: Result(
+        id=job.id, verb=job.verb, ok=True, detail={"ref": job.ref})
     return built
 
 
 def submit(clone: Path, job: Job) -> str:
+    """Push a job, mirroring what the real client does.
+
+    Including the rebase: both sides push to the same branch, so a submit that follows a
+    published result starts out behind. The client handles that; a test helper that did not
+    failed silently and left a test looking for a result that was never requested.
+    """
+    git("fetch", "--quiet", "origin", cwd=clone)
+    git("rebase", "--quiet", "origin/main", cwd=clone)
+
     jobs = clone / "jobs"
     jobs.mkdir(exist_ok=True)
     (jobs / f"{job.id}.json").write_text(job.to_json(), encoding="utf-8")
     git("add", "-A", cwd=clone)
     git("commit", "--quiet", "-m", f"job {job.id}", cwd=clone)
-    git("push", "--quiet", "origin", "HEAD:main", cwd=clone)
+    pushed = git("push", "--quiet", "origin", "HEAD:main", cwd=clone)
+    assert pushed.returncode == 0, f"job {job.id} was never pushed: {pushed.stderr}"
     return job.id
 
 
@@ -226,4 +236,24 @@ def test_the_project_selects_the_notebook(ops, agent):
     beta = submit(ops["cloud"], Job(verb="status", project="beta"))
     agent.poll_once()
     assert result_for(ops["cloud"], alpha)["detail"]["notebook"] == "alpha notebook"
+    assert result_for(ops["cloud"], beta)["detail"]["notebook"] == "beta notebook"
+
+
+def test_a_notebook_named_in_a_job_is_used_and_then_remembered(ops, agent):
+    first = submit(ops["cloud"], Job(verb="status", project="alpha",
+                                     notebook="alpha area two"))
+    agent.poll_once()
+    assert result_for(ops["cloud"], first)["detail"]["notebook"] == "alpha area two"
+
+    # The next job omits it and should land on the same notebook.
+    second = submit(ops["cloud"], Job(verb="status", project="alpha"))
+    agent.poll_once()
+    assert result_for(ops["cloud"], second)["detail"]["notebook"] == "alpha area two"
+
+
+def test_remembering_is_per_project(ops, agent):
+    submit(ops["cloud"], Job(verb="status", project="alpha", notebook="alpha area two"))
+    agent.poll_once()
+    beta = submit(ops["cloud"], Job(verb="status", project="beta"))
+    agent.poll_once()
     assert result_for(ops["cloud"], beta)["detail"]["notebook"] == "beta notebook"

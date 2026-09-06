@@ -30,9 +30,15 @@ operate on:
 | Verb | The caller chooses | The operator fixes, at startup |
 |---|---|---|
 | `sync` | a project, a git ref | which repository each project means, its origin, and any ref allowlist |
-| `refresh` | a project | which filters produce which outputs, the bundle folder, masks, notebook |
-| `ask` | a project, question text, attachments | which notebook receives it |
-| `status` | a project | which notebook |
+| `refresh` | a project, a notebook | which filters produce which outputs, the bundle folder, the masks |
+| `ask` | a project, a notebook, question text, attachments | which notebooks that project may reach |
+| `status` | a project, a notebook | as above |
+
+A project usually owns **several notebooks**, one per architectural area, so the notebook is
+chosen per job. That makes it the one caller-supplied value that decides *which corpus is
+read*, so `notebook_prefix` or `allowed_notebooks` is what stops a leaked token querying a
+different project's notebook. Omit the notebook and the agent reuses the one last used for
+that project.
 
 A leaked token therefore lets someone ask your notebook questions and read the answers —
 which is **source-code disclosure and should be taken seriously** — but not run commands on
@@ -118,8 +124,9 @@ agent serves as many projects as you list:
     "simhost": {
       "repo":     "D:\\WORK\\IOS-IG-SimHost-FDP",
       "origin":   "https://github.com/pjanec/IOS-IG-SimHost-FDP.git",
-      "notebook": "SimHost FDP review",
       "drive_project": "simhost",
+      "notebook_prefix": "SimHost ",
+      "default_notebook": "SimHost FDP review",
       "masks":    ["HROT.", "FDP.", "Docs."],
       "dump": [
         {"filter": "dmp-EXT.dumpfilter",                  "output": "FDP.Ext.txt"},
@@ -149,6 +156,17 @@ Four fields earn their place:
   allow any ref on the origin.
 - **`masks`** must be non-empty: an empty mask set would let a load touch sources it did not
   upload.
+- **`notebook_prefix`** (or `allowed_notebooks`, for an exact list) limits which notebooks
+  this project may load into or query. A prefix is usually the practical choice: name a
+  project's notebooks consistently and new ones need no config change, while a leaked token
+  still cannot reach another project's. Leave both unset to allow any name.
+- **`default_notebook`** is used only when a job names none and none has been used yet.
+
+The agent remembers the notebook last used **per project** in `state_file` (beside the
+config by default), so a session can name it once and omit it thereafter. That memory is a
+convenience and nothing more: delete the file and the only consequence is that the next job
+must name its notebook again. A remembered name is still checked against the rules above, so
+tightening `notebook_prefix` takes effect immediately rather than being grandfathered.
 
 With more than one project configured, **every job must name one**. The agent refuses to
 guess, because guessing would eventually load one project's sources into another's notebook.
@@ -171,8 +189,13 @@ repository.
 
 ```
 python client.py --ops-repo ~/nlm-ops --project simhost sync --ref feature/my-branch
-python client.py --ops-repo ~/nlm-ops --project simhost refresh
-python client.py --ops-repo ~/nlm-ops --project simhost ask --question-file q.md --attach data.json
+
+# name the notebook once ...
+python client.py --ops-repo ~/nlm-ops --project simhost \
+    --notebook "SimHost damage model" refresh
+
+# ... then omit it: the agent reuses the last one for this project
+python client.py --ops-repo ~/nlm-ops --project simhost ask --question-file q.md
 python client.py --ops-repo ~/nlm-ops --project simhost status --json
 ```
 
@@ -221,4 +244,6 @@ files, since git keeps them otherwise.
 | `refresh` fails with exit 13 | content did not survive ingestion — do not trust the notebook until it is understood |
 | results appear twice | two agents are running against one ops repo; run only one |
 | `must name one` | the agent serves several projects; pass `--project` |
+| `no notebook given and none remembered` | pass `--notebook` once, or set `default_notebook` |
+| `notebook ... is not allowed` | it falls outside `notebook_prefix` / `allowed_notebooks` |
 | `origin is ... expected ...` | the clone's remote does not match the configured origin |

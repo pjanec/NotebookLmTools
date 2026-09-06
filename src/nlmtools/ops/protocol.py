@@ -38,6 +38,7 @@ ATTACHMENT_SUFFIXES = {".txt", ".json", ".csv", ".tsv", ".log", ".md", ".yaml", 
 MAX_QUESTION_CHARS = 200_000
 MAX_ATTACHMENT_BYTES = 8_000_000
 MAX_ATTACHMENTS = 5
+MAX_NOTEBOOK_CHARS = 200
 
 
 class JobRejected(Exception):
@@ -58,10 +59,10 @@ class Job:
     verb: str
     id: str = field(default_factory=lambda: f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:8]}")
     project: str | None = None
+    notebook: str | None = None
     ref: str | None = None
     question: str | None = None
     name: str | None = None
-    notebook: str | None = None
     attachments: list[Attachment] = field(default_factory=list)
     created: str = field(default_factory=lambda: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
     requested_by: str = "cloud"
@@ -164,6 +165,18 @@ def validate(job: Job) -> Job:
     # here for shape and resolved against the agent's configuration later.
     if job.project is not None and not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$", job.project):
         raise JobRejected("project must be a plain identifier")
+
+    # A notebook title is human text -- spaces, dashes, accents are all fine -- so it is
+    # checked for shape rather than matched against a pattern. Whether *this* project may
+    # use *that* notebook is decided by the agent's configuration, not here.
+    if job.notebook is not None:
+        title = job.notebook
+        if not title.strip():
+            raise JobRejected("notebook, if given, must not be blank")
+        if len(title) > MAX_NOTEBOOK_CHARS:
+            raise JobRejected(f"notebook title is longer than {MAX_NOTEBOOK_CHARS} characters")
+        if any(ch in title for ch in "\r\n\t") or any(ord(ch) < 32 for ch in title):
+            raise JobRejected("notebook title may not contain control characters")
 
     return job
 
