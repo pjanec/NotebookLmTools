@@ -134,6 +134,11 @@ class AgentConfig:
     poll_seconds: int = 20
     audit_log: Path | None = None
 
+    #: Where `ask` transcripts are saved. **Never inside the ops repo**: the agent runs
+    #: commands with that repo as the working directory, so a relative default would drop
+    #: proprietary answers into a git working tree, one `git add -A` from being published.
+    answers_dir: Path | None = None
+
     #: Remembers the notebook last used per project, so a job may omit it. Purely a
     #: convenience: delete the file and the only consequence is that the next job must
     #: name its notebook again.
@@ -218,6 +223,8 @@ class AgentConfig:
                 audit_log=Path(data["audit_log"]) if data.get("audit_log") else None,
                 state_file=Path(data["state_file"]) if data.get("state_file")
                 else Path(path).with_name("ops-agent-state.json"),
+                answers_dir=Path(data["answers_dir"]) if data.get("answers_dir")
+                else Path(path).with_name("nlm-answers"),
             )
         except KeyError as error:
             raise ConfigError(f"{path} is missing required field {error}") from error
@@ -226,6 +233,11 @@ class AgentConfig:
         return config
 
     def validate(self) -> None:
+        if self.answers_dir and self.ops_repo in self.answers_dir.parents:
+            raise ConfigError(
+                f"answers_dir {self.answers_dir} is inside the ops repo. Transcripts quote "
+                "proprietary sources; keep them out of any git working tree."
+            )
         if not self.projects:
             raise ConfigError("no projects configured; the agent would accept no work")
         if not self.dump_tool.is_file():

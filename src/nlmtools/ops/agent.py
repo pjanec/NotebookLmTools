@@ -251,6 +251,8 @@ class Agent:
                     "--notebook", notebook,
                     "--question-file", str(question_file),
                     "--project", project.drive_project, "--json"]
+            if self.config.answers_dir:
+                args += ["--answers-dir", str(self.config.answers_dir)]
             if job.name:
                 args += ["--name", job.name]
             for attachment in job.attachments:

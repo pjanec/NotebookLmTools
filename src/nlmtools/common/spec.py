@@ -207,6 +207,10 @@ COMMANDS: list[Command] = [
                   "CSV, log, plain text); repeatable", metavar="FILE", repeatable=True),
               Arg(("--name",), "slug for the question source title and transcript "
                   "filename", metavar="SLUG"),
+              Arg(("--answers-dir",), "where to save the transcript; defaults to "
+                  "./answers. Transcripts quote the sources, so point this somewhere "
+                  "outside any repository you might commit", metavar="PATH",
+                  default="answers"),
               Arg(("--fresh",), "start a new conversation instead of continuing the "
                   "notebook's existing one; use when the question must not inherit "
                   "earlier context", action="store_true"),

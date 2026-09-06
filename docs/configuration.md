@@ -18,7 +18,6 @@ the only way to widen what a cloud VM can reach.
 {
   "ops_repo":     "C:\\Users\\pjane\\nlm-ops",
   "nlmt":         "D:\\WORK\\NotebookLM\\.venv\\Scripts\\nlmt.exe",
-  "python":       "C:\\Python313\\python.exe",
   "dump_tool":    "C:\\Utils\\AITools\\CodeDump\\dump.py",
   "poll_seconds": 20,
   "audit_log":    "C:\\Users\\pjane\\nlm-ops-audit.jsonl",
@@ -30,7 +29,6 @@ the only way to widen what a cloud VM can reach.
       "origin":           "https://github.com/pjanec/IOS-IG-SimHost-FDP.git",
       "drive_project":    "simhost",
       "masks":            ["HROT.", "FDP.", "Docs."],
-      "notebook_prefix":  "SimHost ",
       "default_notebook": "SimHost FDP review",
       "dump": [
         {"filter": "dmp-EXT.dumpfilter",                  "output": "FDP.Ext.txt"},
@@ -45,6 +43,11 @@ the only way to widen what a cloud VM can reach.
 }
 ```
 
+`python` is omitted deliberately: leaving it out is the right answer, since it defaults to
+the interpreter running the agent, where the dump tool's dependencies are pinned.
+`notebook_prefix` is omitted too — add it only when one account holds several projects'
+notebooks and you want each project's token confined to its own.
+
 ### Top level
 
 | Field | Required | Meaning |
@@ -56,6 +59,7 @@ the only way to widen what a cloud VM can reach.
 | `poll_seconds` | no | how often to look for work (default 20) |
 | `audit_log` | no | append-only record of every job, refusals included |
 | `state_file` | no | remembers the last notebook per project; defaults beside this file |
+| `answers_dir` | no | where `ask` transcripts are saved; defaults beside this file. **Refused if it is inside the ops repo** — see below |
 
 ### Per project
 
@@ -89,6 +93,12 @@ when it looks installed: a `pip install --user` package lives in
 `AppData\Roaming\Python\...`, but that same interpreter, when spawned as a child of the
 venv, resolves user-site to the Microsoft Store location and cannot see it. The failure is
 `ModuleNotFoundError: No module named 'pathspec'` from an interpreter you can prove has it.
+
+**Transcripts must not land in a git working tree.** The agent runs commands with the ops
+repo as their working directory, so a relative `answers/` would drop proprietary answers
+into that clone — untracked, but one `git add -A` from being pushed. `answers_dir` defaults
+beside the config file, the agent refuses a path inside the ops repo, and the ops repo
+ignores `answers/` as well.
 
 **Filter files must be committed.** `sync` runs `git clean -fd`, which deletes untracked
 files — an uncommitted `.dumpfilter` disappears the first time a branch is synced, and

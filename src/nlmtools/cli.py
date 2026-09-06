@@ -464,7 +464,7 @@ def _run_ask(args: argparse.Namespace) -> Envelope:
         attachments=[Path(a) for a in (args.attach or [])],
         project=args.project,
         lock_dir=cache_dir / "locks",
-        answers_dir=Path("answers"),
+        answers_dir=Path(args.answers_dir or "answers"),
         name=args.name,
         keep=args.keep,
         drive=Drive(remote=args.drive_remote, root=args.drive_root),

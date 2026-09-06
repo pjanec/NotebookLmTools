@@ -626,3 +626,30 @@ Worth noting what this would have cost later: a new machine following
 `bootstrap-new-machine.md` would have installed cleanly, passed the live check — which does
 not run the dump tool — and then failed on its first `refresh` with an error pointing at an
 interpreter that appears to have the module.
+
+### The full cycle, through the queue (2026-09-06)
+
+`refresh` into a notebook that did not exist, then a cross-module `ask`, both submitted as
+jobs:
+
+| Stage | Result |
+|---|---|
+| refresh | 3m04s, `ok: true`, `notebook_created: true` |
+| load | 21 selected / uploaded / verified / added, `deleted: 0`, `ready: true` |
+| ask | 2m00s, 5,993 characters, 8 citations across 21 sources |
+
+The answer traced an editor gesture to a running SimHost node across gizmos,
+`IEntityComponentWriter`, `EntityWriteRouter`, `BinaryInterpreter` and DDS, naming the CQRS
+and anti-corruption-layer rationale and citing the design documents. That is the shape of
+question a split corpus cannot answer, which is why the whole project's slices share one
+notebook.
+
+`deleted: 0` also confirms a second notebook for a project leaves the first alone.
+
+**One bug found by the run: transcripts were written inside the ops repo.** The agent runs
+`nlmt` with the ops clone as the working directory, and `ask` defaulted to a relative
+`answers/`, so answers quoting proprietary sources landed in a git working tree — untracked,
+but one `git add -A` from being published. Fixed three ways: `nlmt ask` gained
+`--answers-dir`, the agent passes an absolute path defaulting beside its config, and the
+config refuses an `answers_dir` inside the ops repo. The ops repo also ignores `answers/`
+now, as defence in depth.
