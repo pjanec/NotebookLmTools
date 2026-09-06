@@ -105,6 +105,7 @@ that has never read any documentation can still recover.
 | [`NOTES.md`](NOTES.md) | running log: what the undocumented API actually does, and why decisions were made |
 | [`docs/ask-the-architect-guide.md`](docs/ask-the-architect-guide.md) | drop-in guidance for a consuming project's `CLAUDE.md` |
 | [`docs/refreshing-the-bundle-guide.md`](docs/refreshing-the-bundle-guide.md) | when and how an agent should refresh the snapshot |
+| [`docs/remote-control-setup.md`](docs/remote-control-setup.md) | driving this machine from a cloud VM, and why it is safe |
 | [`CLAUDE.md`](CLAUDE.md) | rules for agents working in this repository |
 
 ## Development

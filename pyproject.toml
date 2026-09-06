@@ -23,3 +23,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: spawns many git processes; skip with -m 'not slow' during quick iteration",
+]
