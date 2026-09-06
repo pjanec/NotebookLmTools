@@ -62,6 +62,13 @@ A slicing that works well:
 | tests | behaviour as specified by tests | `Core.Tests.txt` |
 | docs | design documents, ADRs, notes | `Docs.txt` |
 
+**Slice for dumping, not for separate notebooks.** The slices exist because NotebookLM caps
+a single source at 500,000 words, not because the corpus should be divided between notebooks.
+Keep one project's slices in one notebook: **cross-module questions are the valuable ones**,
+and they are exactly what a split corpus cannot answer. A coding agent already handles a
+single small area well on its own — what it cannot do is reason across the whole system,
+which is the entire reason to ask the architect.
+
 Two rules that save trouble later:
 
 - **Give every output of one project a common prefix**, or a small set of them. The prefixes

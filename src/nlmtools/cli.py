@@ -44,13 +44,14 @@ def _add_arg(parser: argparse.ArgumentParser, arg: spec.Arg) -> None:
     kwargs: dict[str, object] = {"help": arg.help}
     if arg.action:
         kwargs["action"] = arg.action
+        kwargs["default"] = argparse.SUPPRESS
     else:
         kwargs["metavar"] = arg.metavar or arg.name.upper()
         if arg.repeatable:
             kwargs["action"] = "append"
-            kwargs["default"] = []
-        else:
-            kwargs["default"] = arg.default
+        # No default here: it is applied in `resolve()` after the config file, so that
+        # "the user typed it" and "it happens to equal the default" stay distinguishable.
+        kwargs["default"] = argparse.SUPPRESS
         if arg.type == "integer":
             kwargs["type"] = int
         if arg.choices:
@@ -136,6 +137,95 @@ def build_parser() -> argparse.ArgumentParser:
         "topic", nargs="?", metavar="TOPIC", help="one of: " + ", ".join(topics.names())
     )
     return parser
+
+
+def load_config_file(path: str, command: str) -> tuple[dict, dict]:
+    """Read a TOML config: top-level keys apply everywhere, `[command]` tables override.
+
+    ```toml
+    notebook = "SimHost FDP review"      # applies to any command that takes --notebook
+    project  = "simhost"
+
+    [load]
+    local-folder  = "D:/WORK/IOS-IG-SimHost-FDP/.dumps"
+    mask          = ["HROT.", "FDP.", "Docs."]
+    verify-ingest = "sample"
+    ```
+
+    Keys may be written as they appear on the command line (`local-folder`) or as
+    identifiers (`local_folder`); both are accepted, because guessing wrong produces a
+    setting that is silently ignored.
+    """
+    import tomllib
+
+    try:
+        with open(path, "rb") as handle:
+            data = tomllib.load(handle)
+    except OSError as error:
+        raise ToolError(
+            exits.USAGE, f"cannot read config {path}: {error}",
+            hint="check the path passed to --config",
+        ) from error
+    except tomllib.TOMLDecodeError as error:
+        raise ToolError(
+            exits.USAGE, f"{path} is not valid TOML: {error}",
+            hint="fix the syntax, or drop --config to use command-line arguments only",
+        ) from error
+
+    def identifiers(section: dict) -> dict:
+        return {k.replace("-", "_"): v for k, v in section.items()
+                if not isinstance(v, dict)}
+
+    return identifiers(data), identifiers(data.get(command) or {})
+
+
+def resolve(args: argparse.Namespace, command: spec.Command) -> argparse.Namespace:
+    """Apply precedence: command line beats config file beats built-in default."""
+    given = vars(args)
+
+    settled: dict[str, object] = {}
+    for argument in command.args:
+        if argument.action == "store_true":
+            settled[argument.name] = False
+        elif argument.repeatable:
+            settled[argument.name] = []
+        else:
+            settled[argument.name] = argument.default
+
+    config_path = given.get("config")
+    if config_path:
+        known = {a.name for a in command.args}
+        shared, for_this_command = load_config_file(config_path, command.name)
+
+        # A key under [command] is meant for this command, so a name it does not have is a
+        # mistake worth stopping for.
+        unknown = sorted(set(for_this_command) - known)
+        if unknown:
+            raise ToolError(
+                exits.USAGE,
+                f"{config_path} sets options under [{command.name}] that it does not "
+                "have: " + ", ".join(unknown),
+                hint=f"run 'nlmt {command.name} --help' to see what it accepts",
+            )
+
+        # A top-level key means "apply this wherever it is relevant", so one that belongs
+        # to a different command is skipped rather than fatal -- otherwise a single shared
+        # config could not serve more than one command. One that belongs to *no* command is
+        # still a typo, and silently ignoring it is how a setting goes unnoticed for weeks.
+        everywhere = {a.name for c in spec.COMMANDS for a in c.args}
+        nonsense = sorted(set(shared) - everywhere)
+        if nonsense:
+            raise ToolError(
+                exits.USAGE,
+                f"{config_path} sets options no command has: " + ", ".join(nonsense),
+                hint="check the spelling, or move it under a [command] table",
+            )
+
+        settled.update({k: v for k, v in shared.items() if k in known})
+        settled.update(for_this_command)
+
+    settled.update(given)  # anything actually typed wins
+    return argparse.Namespace(**settled)
 
 
 # -- generated references ---------------------------------------------------------
@@ -608,9 +698,14 @@ def main(argv: list[str] | None = None) -> int:
     command = spec.command(args.command)
     assert command is not None
     envelope = Envelope(action=command.name)
-    as_json = bool(getattr(args, "json", False))
+    # Read --json from what was actually typed, before the config file is merged: a broken
+    # config must still be reported as JSON to a caller that asked for JSON. Otherwise the
+    # one failure a machine cannot parse is the one telling it its own config is wrong.
+    as_json = bool(vars(args).get("json", False))
 
     try:
+        args = resolve(args, command)
+        as_json = bool(getattr(args, "json", False))
         handlers = {
             "gen-fixtures": _run_gen_fixtures,
             "load": _run_load,

@@ -99,6 +99,7 @@ that has never read any documentation can still recover.
 | File | What it is |
 |---|---|
 | [`docs/bootstrap-new-machine.md`](docs/bootstrap-new-machine.md) | installing and verifying on another machine, end to end |
+| [`docs/configuration.md`](docs/configuration.md) | every config file, with sample content |
 | [`docs/design.md`](docs/design.md) | the authoritative specification |
 | [`docs/google-oauth-setup.md`](docs/google-oauth-setup.md) | the one-time Google Cloud step |
 | [`docs/requirements-original-brief.md`](docs/requirements-original-brief.md) | the original brief, frozen; superseded where it differs |
