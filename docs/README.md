@@ -11,8 +11,7 @@ Two documents, with different standing. Do not confuse them.
 | `configuration.md` | Reference. | Every config file with sample content, what is generated, and what must never be committed. Enough to install from the documents alone. |
 | `remote-control.md` | **Design + procedure.** | Driving the Windows machine from a Claude cloud VM through a private git queue: why it is shaped that way, what the trust boundary guarantees, how to install it, and the full config reference. |
 | `onboarding-a-project.md` | Procedure. | Adding a new project to a working installation: what to do on GitHub, on Windows, and on the cloud VM. |
-| `refreshing-the-bundle-guide.md` | Operator-facing. | When the architect's snapshot has drifted too far from the working copy, and how to replace it. Companion to the guide below. |
-| `ask-the-architect-guide.md` | Operator-authored. | Drop-in guidance for a consuming project's `CLAUDE.md`: how an AI agent should consult the notebook, and why it must verify every claim against the code. |
+| `consulting-the-architect.md` | **For consuming projects.** | The canonical guide an agent follows: when to ask, how, keeping the snapshot current, and what standing an answer has. Link to it from a project's `CLAUDE.md` rather than copying it. |
 
 `requirements-original-brief.md` is the brief the operator handed over at the start. It is
 kept verbatim so the reasoning behind the non-negotiables — above all *why* a `.txt` must

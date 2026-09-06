@@ -165,54 +165,25 @@ touch the queue and nothing else.
 
 ### 8. Tell the agent how to use it
 
-Paste this into the project's `CLAUDE.md`, adjusting the names. It is deliberately explicit
-about verification, because the failure it guards against — a confident, well-formed,
-outdated answer — is not one you notice by reading.
+Add one entry to the project's `CLAUDE.md`, pointing at the canonical guide rather than
+copying it — that document changes as the tools do, and a copy would quietly rot:
 
 ```markdown
-## Asking the architect (NotebookLM, via the always-on machine)
+## Consulting the NotebookLM architect
 
 A NotebookLM notebook holds a snapshot of this project's sources and design documents and
-acts as a **system architect**. It runs on a separate always-on machine; you reach it
-through a job queue in `~/nlm-ops`. Nothing here holds any credentials.
+can answer cross-module architectural questions. Reach it through the job queue in
+`~/nlm-ops` (project `myproject`).
 
-    python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project myproject \
-        --notebook "MyProject core" ask --question-file <question>.md
+**Read this before using it:**
+https://github.com/pjanec/NotebookLmTools/blob/main/docs/consulting-the-architect.md
 
-**When to ask.** Architectural questions rather than mechanical ones: how a subsystem is
-meant to fit together, what the intended design or prior art was, why something is shaped
-the way it is, what already exists before you build something new. Never for anything a
-local grep or file read answers — that is slower and less certain than looking.
-
-**How to ask.** Write the question to a file; long, specific questions get far better
-answers than short ones. Attach a data file the question refers to with `--attach <file>`.
-Omit `--notebook` to reuse whichever notebook was last used for this project. Each call
-takes **two to four minutes**, so ask few well-formed questions rather than many small ones,
-and never in a loop.
-
-**Keeping it current.** The architect reads a snapshot, not your working tree. Before the
-first question of a session, and after changing code the question is about, refresh it:
-
-    python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project myproject sync --ref <branch>
-    python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project myproject refresh
-
-`sync` puts the always-on machine on your branch; `refresh` re-dumps and reloads. Together
-they take several minutes, so do it at natural boundaries rather than after every commit.
-
-**Treat the architect as an expert colleague who is often right and occasionally
-confidently wrong.** It reasons across a corpus far larger than you can hold in context and
-routinely surfaces design intent, cross-subsystem relationships and prior art no amount of
-grepping would find. But it is an AI reading a snapshot: it hallucinates plausible class and
-method names, misses things that are genuinely present, and states inference as fact.
-**Every concrete claim is a lead, not a finding.** Open the named file and confirm the
-class, method or field exists and behaves as described before acting on it. Prefer claims
-carrying citations. Never cite the architect as authority in a commit message, a code
-comment or a decision record — cite the code you verified instead.
-
-**When it is unavailable.** A non-zero exit means the architect could not answer; the
-message says why. Carry on with what you can do without it rather than blocking or
-retrying in a loop. Exit 11 means a human must sign in on the always-on machine.
+It is **additional feedback, never a decision**: the user has the last word, never consult
+it silently, and verify every load-bearing claim against source before acting on it. This
+project's own convention for architectural question documents is unchanged.
 ```
+
+A new session then learns the whole procedure from the repository, with no special prompt.
 
 ---
 
