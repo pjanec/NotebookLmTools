@@ -100,8 +100,16 @@ python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project <project> sync --ref <
 python ~/nlm-ops/client.py --ops-repo ~/nlm-ops --project <project> refresh
 ```
 
-`sync` puts the always-on machine on your branch; `refresh` regenerates the bundle and
-reloads it. Refresh at natural boundaries — after a subsystem lands — not after every commit.
+`sync` puts the always-on machine's working copy on the ref you name, so that `refresh`
+dumps *your* code rather than whatever that clone was last sitting on; `refresh` then
+regenerates the bundle and reloads it. Refresh at natural boundaries — after a subsystem
+lands — not after every commit.
+
+⚠ **`sync` resolves the ref against `origin`, so it only sees pushed commits.** Work that is
+uncommitted, or committed but not pushed, is invisible to the architect however many times
+you refresh — and nothing reports this, because the sync succeeds and dumps a tree that is
+simply older than yours. Push first, then sync. It also takes a ref name, never a URL, and
+`git clean -fd` runs afterwards, so anything untracked in that clone is discarded.
 
 **Deciding whether it is stale enough to matter.** The decisive question is not *how much*
 has changed but **whether what changed is what you are asking about**:
