@@ -68,7 +68,7 @@ caller chooses only which project and notebook — never what runs:
 | Verb | Caller supplies | The operator's config fixes |
 |---|---|---|
 | `sync` | project, git ref | which repo, its origin, any ref allowlist |
-| `refresh` | project, notebook | which filters produce which outputs, the masks |
+| `refresh` | project, notebook, optionally a ref | which filters produce which outputs, the masks |
 | `ask` | project, notebook, question, attachments | which notebooks the project may reach |
 | `status` | project, notebook | as above |
 
@@ -237,13 +237,11 @@ to start on a bad one rather than half-working.
 repository.
 
 ```
-python client.py --ops-repo ~/nlm-ops --project simhost sync --ref feature/my-branch
-
-# name the notebook once ...
+# the whole update in one job: check the branch out, re-dump, reload the notebook
 python client.py --ops-repo ~/nlm-ops --project simhost \
-    --notebook "SimHost damage model" refresh
+    --notebook "SimHost damage model" refresh --ref feature/my-branch
 
-# ... then omit it: the agent reuses the last one for this project
+# afterwards the notebook is remembered, so it can be omitted
 python client.py --ops-repo ~/nlm-ops --project simhost ask --question-file q.md
 python client.py --ops-repo ~/nlm-ops --project simhost status --json
 ```
