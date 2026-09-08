@@ -729,3 +729,33 @@ reported `Ready` while an agent was still running, so a `Start-ScheduledTask` wo
 identity comes from the filename and both would execute it. Observed here, twice. The
 restart procedure in `remote-control.md` now kills the python process explicitly and says to
 count the processes before starting.
+
+## cp1252 killed the client after the answer was already paid for
+
+A Windows session (`H - win`) asked the architect through the relay, got its answer, and
+then watched `client.py` die printing it: `'charmap' codec can't encode character
+'\U0001f680'`. The ask had succeeded; the text was sitting in `results/<id>.json`, and the
+session read it out by hand.
+
+That is the worst shape a bug can take here. Everything expensive had already worked --
+the job ran, the notebook answered, the result was published -- and the failure landed in
+the last line of the program, on the part that costs nothing.
+
+`nlmt` had been immunised against this months earlier (`cli.py` reconfigures both streams
+to UTF-8 with `errors="replace"`); `client.py` had not, because it is a separate
+dependency-free file that shares no code with the CLI. Fixed the same way, plus the agent,
+whose stderr the scheduled task redirects into a cp1252 log file -- a refusal quoting a
+notebook title would have been enough, and several notebooks on this account have Czech
+names.
+
+The regression test runs the client in a subprocess under `PYTHONIOENCODING=cp1252` and
+prints an emoji, an en dash and Czech diacritics. Reverting the fix reproduces the exact
+error from the report, which is the only way to know a test of this kind is honest.
+
+`PYTHONIOENCODING`, as suggested in the report, would work but has to be set by whoever
+launches the client -- so it fixes this machine, not the next one. `reconfigure()` in
+`main()` travels with the file, which matters because the agent publishes that file into
+the ops repo for every VM to clone.
+
+Two stale pointers went with it: the agent's `--help` and its config error both named
+`docs/remote-control-setup.md`, a document merged into `remote-control.md` some time ago.

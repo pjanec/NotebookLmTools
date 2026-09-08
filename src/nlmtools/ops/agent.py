@@ -475,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         description=(
             "Poll a private git repository for jobs and execute them. Nothing listens: the "
             "machine makes only outbound git connections. What a job may ask for is fixed "
-            "by the config file, not by the caller -- see docs/remote-control-setup.md."
+            "by the config file, not by the caller -- see docs/remote-control.md."
         ),
     )
     parser.add_argument("--config", required=True,
@@ -485,6 +485,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--log-level", default="info",
                         choices=("debug", "info", "warning", "error"))
     args = parser.parse_args(argv)
+
+    # The scheduled task redirects stderr into a log file, which is cp1252 on a default
+    # Windows install. Refusals quote notebook titles, and titles are human text -- one
+    # with an accent in it would otherwise be replaced by a logging-error traceback in the
+    # one record that says why a job was turned away.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # not a reconfigurable stream
+            pass
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
@@ -496,7 +506,7 @@ def main(argv: list[str] | None = None) -> int:
         config = AgentConfig.from_file(Path(args.config))
     except (OSError, ValueError, KeyError) as error:
         print(f"could not read {args.config}: {error}", file=sys.stderr)
-        print("see docs/remote-control-setup.md for the expected fields", file=sys.stderr)
+        print("see docs/configuration.md for the expected fields", file=sys.stderr)
         return 2
 
     agent = Agent(config)

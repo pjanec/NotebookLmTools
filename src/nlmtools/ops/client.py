@@ -102,6 +102,17 @@ def build_job(args: argparse.Namespace) -> dict:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # The console is cp1252 on a default Windows install, and what this prints is an
+    # architect answer -- prose that routinely carries an emoji, a dash or an accent. A
+    # crash here is especially cruel: the ask has already succeeded and been paid for, the
+    # answer is safe in results/, and the caller sees only a UnicodeEncodeError. Reported
+    # from a Windows session on 2026-09-08, which had to read the result file by hand.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):  # not a reconfigurable stream
+            pass
+
     parser = argparse.ArgumentParser(
         prog="nlm-ops",
         description="Ask the Windows agent to do something, through a private git repo. "
