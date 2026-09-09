@@ -47,13 +47,23 @@ its own.
 
 ## When to ask, and when not to
 
+**Its one real advantage is breadth.** It has no better access to your files than you do; it
+has simply read all of them. One ask enumerated the producers of five event types across
+four assemblies in a single pass. That is what to spend it on.
+
 **Worth asking:** how a subsystem is meant to fit together; what the intended design or
 prior art was; why something is shaped the way it is; what already exists before you build
 something new; how a change propagates end to end across subsystems.
 
-**Not worth asking:** anything a local grep or file read settles. That is faster, cheaper and
-more certain. Also skip it for questions confined to code you have just written — the
-snapshot does not contain it.
+**Not worth asking:** anything a local grep or file read settles — which is most questions.
+That is faster, cheaper and more certain. Also skip it for questions confined to code you
+have just written; the snapshot does not contain it.
+
+⚠ **Measure locally first, and relay only what survives.** In one recorded session the
+decisive fact sat about fifty lines inside a file the asker had already opened twice, in a
+method they had not read. Minutes of relay bought what a targeted read would have given
+immediately. Exhaust the local reads first; what is left — the questions spanning more
+modules than you can hold at once — is what the architect is for.
 
 ---
 
@@ -61,6 +71,44 @@ snapshot does not contain it.
 
 Write the question to a **file**. Long, specific questions get far better answers than short
 ones; up to about 8,000 characters travel inline.
+
+### How to shape it — measured, not guessed
+
+Three consecutive asks on one design question, September 2026. Only the third paid:
+
+| ask | shape | outcome |
+|---|---|---|
+| 1 | the whole design document, with the asker's recommended lean on every sub-question | **negative.** Skipped two sub-questions, answered a third it had silently rewritten, and recommended a class that did not exist — time went on disproving it |
+| 2 | one sub-question, leans stripped | **~zero.** It agreed, citing the asker's *own question document* as its evidence, because a refresh had ingested it |
+| 3 | evidence only: no options, no leans, *"name the producers and what fills their fields"* | **paid.** Two verified facts the asker did not have, one of which settled the question |
+
+**Ask for evidence, never for a verdict.** A verdict from a model that has read your verdict
+is worth nothing. *"What produces X, and what fills its fields?"* returns checkable facts.
+*"Which option should we pick?"* returns your own framing, restated with more confidence
+than you wrote it.
+
+**Say explicitly what a non-answer looks like.** Name *"no producer found"* and *"not
+determinable from the sources"* as good answers, in the question. That permission is what
+produces honest ones; without it a gap gets filled with a plausible reconstruction, and a
+reconstruction is indistinguishable from a finding until you go and check it.
+
+**Do not put your leans in the corpus.** A refresh ingests your documentation directory, so
+a committed question document becomes a source and the answer will cite your reasoning back
+at you as though it were evidence. **Ask first, commit the question afterwards.**
+
+⚠ This is rarely hypothetical. Where it was measured, all 68 committed question documents
+were in the documentation slice, spread across ten of its eleven parts. Check your own: grep
+the loaded bundle in `.dumps` for the name of a question document before assuming it is
+absent.
+
+When it is already committed, the enforceable instruction is not *"ignore it"* — that is
+unverifiable, and it can push the model into manufacturing disagreement to look
+independent. It is:
+
+> `<path>` is my own reasoning, not evidence. Do not cite it to support a factual claim.
+
+**Compliance is checkable: read the citations.** In the run above, ask 2 cited the document
+and ask 3 did not. Do that check before you trust an answer that agrees with you.
 
 ### From a cloud VM, through the relay
 

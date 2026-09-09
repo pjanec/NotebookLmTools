@@ -759,3 +759,40 @@ the ops repo for every VM to clone.
 
 Two stale pointers went with it: the agent's `--help` and its config error both named
 `docs/remote-control-setup.md`, a document merged into `remote-control.md` some time ago.
+
+## What shape of question actually pays
+
+Field results from a session using the architect on one design question, September 2026.
+Three consecutive asks, one of which paid:
+
+1. **The whole design document, with a recommended lean on every sub-question** — negative
+   value. It skipped two sub-questions, answered a third it had silently rewritten, and
+   recommended a class that did not exist in the target codebase; the asker spent time
+   disproving it.
+2. **One sub-question, leans stripped** — about zero. It agreed, and cited the asker's *own
+   question document* as the evidence, because a refresh had ingested it.
+3. **Evidence only — no options, no leans, "name the producers and what fills their
+   fields"** — paid. Two verified facts the asker did not have, one of which settled the
+   question.
+
+The lesson is not "write better prompts" but **ask for evidence, never for a verdict**: a
+verdict from a model that has read your verdict is worth nothing.
+
+**The self-citation is structural here, not bad luck.** `dmp-Docs.dumpfilter` covers `docs`,
+and the project's convention writes architect questions to `docs/blueprints/`. Checked
+against the loaded bundle: all **68** `Architect_Question_*.md` files are in the corpus,
+referenced across ten of the eleven `Docs.All` parts. Any question about a topic already
+written up will retrieve the asker's own reasoning.
+
+The mitigation that works is the one that can be **verified**: not "ignore that file", which
+is unverifiable and can push the model into manufacturing disagreement to look independent,
+but *"`<path>` is my own reasoning, not evidence. Do not cite it to support a factual
+claim"* — after which you read the citations and see whether it complied. In the recorded
+run, ask 2 cited the document and ask 3 did not.
+
+**Its advantage is breadth, and only breadth.** It has no better access to the files than the
+asker; it has simply read all of them. The decisive fact in that session sat fifty lines
+inside a file the asker had already opened twice. The same ask, though, enumerated the
+producers of five event types across four assemblies in one pass -- which no local read
+would have done. Relay what spans more modules than fit in a context window; read the rest
+locally.
