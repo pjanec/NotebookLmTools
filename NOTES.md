@@ -796,3 +796,30 @@ inside a file the asker had already opened twice. The same ask, though, enumerat
 producers of five event types across four assemblies in one pass -- which no local read
 would have done. Relay what spans more modules than fit in a context window; read the rest
 locally.
+
+**Excluding question documents is a one-line filter change, not a reorganisation.** The
+operator's instinct was to separate undecided questions from documents recording agreed
+design — correct, and the repository argues it better than the principle does: the status
+convention already exists (`Status: ✅ APPROVED (architect, 2026-08-04)`) and appears on
+**10 of 68** documents. Nine approved, three draft, 58 carrying no status line at all. A
+field that 85% of documents omit cannot be relied on by a reader and cannot be read by a
+dump filter at all.
+
+A directory split would work but costs a 68-file move and would have missed five question
+documents sitting in `docs/UX` rather than `docs/blueprints`. Excluding by **name** costs
+one line:
+
+```
+- **/Architect_Question_*.md
+```
+
+Measured with `--dry-run` against the real tree: **851 -> 778** included files, a delta of
+exactly 73, which is precisely the number of `Architect_Question_*.md` files under the three
+dumped roots. Nothing unintended matched.
+
+It excludes settled questions too, deliberately. An approved question document is still a
+record of deliberation — the rejected options, the lean the asker arrived with — and
+retrieval works on chunks that never see the APPROVED header. What belongs in the corpus is
+the decision, restated in the design documentation as a description of how the system works.
+That leaves a real debt: the nine approved documents hold decisions that may exist nowhere
+else, and excluding them removes that intent from the corpus until it is written up.

@@ -92,14 +92,32 @@ determinable from the sources"* as good answers, in the question. That permissio
 produces honest ones; without it a gap gets filled with a plausible reconstruction, and a
 reconstruction is indistinguishable from a finding until you go and check it.
 
-**Do not put your leans in the corpus.** A refresh ingests your documentation directory, so
-a committed question document becomes a source and the answer will cite your reasoning back
-at you as though it were evidence. **Ask first, commit the question afterwards.**
+**Keep your leans out of the corpus — structurally.** A refresh ingests your documentation
+directory, so a committed question document becomes a source and the answer cites your own
+reasoning back at you as evidence. ⚠ This is rarely hypothetical: where it was measured, all
+68 committed question documents were in the documentation slice, across ten of its eleven
+parts. Check yours before assuming otherwise — grep the loaded bundle in `.dumps` for the
+name of a question document.
 
-⚠ This is rarely hypothetical. Where it was measured, all 68 committed question documents
-were in the documentation slice, spread across ten of its eleven parts. Check your own: grep
-the loaded bundle in `.dumps` for the name of a question document before assuming it is
-absent.
+**The fix is one line in the dump filter, not a habit.** Exclude question documents by name:
+
+```
+- **/Architect_Question_*.md
+```
+
+Then you can commit a question the moment you write it. A `--dry-run` of the dump before and
+after tells you exactly how many files it removed; check that number against how many
+question documents you have, so a pattern that quietly matches nothing is caught at once.
+
+**Note this excludes settled questions too, and that is deliberate** — an approved question
+document is still a record of deliberation, carrying the options you rejected and the lean
+you arrived with, and retrieval works on chunks that do not see the APPROVED header. What
+belongs in the corpus is the **decision**: once a question is settled, state the outcome in
+the design documentation as a positive description of how the system works. The question
+document stays as provenance, out of the bundle.
+
+Without the filter, the habit is the fallback: **ask first, commit the question afterwards.**
+Where it is already committed, the enforceable instruction is below.
 
 When it is already committed, the enforceable instruction is not *"ignore it"* — that is
 unverifiable, and it can push the model into manufacturing disagreement to look
