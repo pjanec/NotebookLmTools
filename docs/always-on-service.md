@@ -141,6 +141,36 @@ wrapper, and the `python.exe` beneath it can survive — still polling, still on
 queue**, which is the one thing that breaks exactly-once. Observed here twice. Always kill
 the process explicitly and count the rows before starting.
 
+### Deactivating it — and why shutting the machine down is not that
+
+```powershell
+Unregister-ScheduledTask -TaskName "NotebookLM relay agent" -Confirm:$false
+```
+
+That also stops the running instance, unlike `Stop-ScheduledTask`; confirm no `python.exe`
+remains, as in the restart block above.
+
+⚠ **Powering the machine off does not deactivate the relay.** The trigger is *at logon*, so
+a machine that is merely shut down is one boot away from polling again and picking up
+whatever is in the queue. Measured: a machine off for a month resumed watching the queue
+within seconds of being booted, with nobody asking it to. **Moving the relay to another
+machine therefore means unregistering the task on the old one** — otherwise the first time
+it boots you have two agents on one queue, which is the failure this whole section warns
+about.
+
+⚠ **The queue has no age cutoff.** A newly started agent's first pass runs *every* job in
+`jobs/` with no matching result, however old — the test is "no result file", not "recent".
+So after any gap in service, compare the two directories before starting, and delete stale
+requests you no longer want answered:
+
+```bash
+cd ~/nlm-ops && git fetch -q origin && git reset -q --hard origin/main
+comm -23 <(ls jobs/*.json | xargs -n1 basename | sort) <(ls results/*.json | xargs -n1 basename | sort)
+```
+
+While nothing is serving the queue, a caller simply waits: `client.py` times out rather
+than failing fast, and the job stays pending until an agent appears.
+
 ### Health, on two separate clocks
 
 `nlmt doctor` checks both credentials and names which one failed. They do not expire
