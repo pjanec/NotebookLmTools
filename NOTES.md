@@ -882,3 +882,20 @@ identity is the filename and there are no cross-machine leases, so a twin instal
 pointed at `nlm-ops` would execute every job twice. That makes "install it on another
 machine the same way" four different intentions -- move, second independent relay, cold
 spare, or plain workstation -- and the handoff now opens by making the reader choose.
+
+**"Already covered" was wrong: the wire protocol was undocumented.** The guide an LLM
+actually reads documented `client.py` and nothing else -- the job and result JSON shapes
+appeared nowhere, in any document. `remote-control.md` named the two directories in an ASCII
+diagram and left it there. So a session whose clone lacked `client.py`, or that had no usable
+Python, had no way to proceed and no way to know the queue is only two folders of JSON.
+
+`consulting-the-architect.md` now carries the format: the id pattern, the three verbs and
+which fields each uses, the attachment encoding and limits, the git sequence for submitting
+(with the rebase, since racing the agent's result push is normal), the poll loop, and the
+result fields. `client.py` is now a convenience rather than the interface.
+
+**Shutting a relay machine down does not retire it.** The task triggers at logon, so a
+powered-off machine is one boot away from polling the queue again -- demonstrated here: off
+for a month, booted 2026-10-10, agent watching within seconds without anyone asking. A move
+therefore needs `Unregister-ScheduledTask` on the old machine, not the power switch, or the
+first boot after the new machine goes live gives two agents on one queue.

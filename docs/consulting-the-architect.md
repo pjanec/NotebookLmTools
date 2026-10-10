@@ -153,6 +153,82 @@ time of asking — is also saved on the always-on machine, outside any repositor
 quotes proprietary source. That is a record for the operator, not the delivery mechanism:
 **do not go looking for the transcript file; use the answer you were given.**
 
+### Without `client.py` — the queue is just two folders of JSON
+
+`client.py` is a convenience, not the interface. If it is missing from the clone, Python is
+unavailable, or it misbehaves, **git alone is enough**: the agent reads `jobs/` and writes
+`results/`, and nothing else is going on.
+
+**1. Write the job.** `jobs/<id>.json`, where `<id>` is yours to choose and must match
+`^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$`. A timestamp plus a random suffix is the convention and
+keeps listings sorted:
+
+```json
+{
+  "id": "20261010T084512Z-a1b2c3d4",
+  "verb": "ask",
+  "project": "<project>",
+  "notebook": "<notebook>",
+  "question": "the whole question, inline, as one string",
+  "created": "2026-10-10T08:45:12Z",
+  "requested_by": "cloud"
+}
+```
+
+Three verbs, and nothing else is accepted:
+
+| `verb` | Fields it uses | What it does |
+|---|---|---|
+| `ask` | `question` (required), `notebook`, `attachments` | asks, returns the answer |
+| `refresh` | `notebook`, `ref` | syncs that ref, re-dumps, reloads the notebook |
+| `status` | `notebook` | what is in the notebook and whether it is ready |
+
+`project` is required whenever the agent serves more than one. `notebook` may be omitted to
+reuse whichever that project used last. `ref` must be a plain ref name — no URLs, no
+options, no `..`. Optional `attachments` is a list of
+`{"name": "data.json", "content_b64": "<base64>"}`, at most 5, 8 MB each, with a text-like
+extension (`.txt .json .csv .tsv .log .md .yaml .yml .xml`). A question is capped at 200,000
+characters, though only the first ~8,000 travel inline to the model.
+
+**2. Submit it.** Rebase before pushing, because the agent pushes results to the same
+branch and a race is normal rather than exceptional:
+
+```bash
+cd ~/nlm-ops
+git fetch --quiet origin && git reset --hard --quiet origin/main
+mkdir -p jobs && cat > jobs/$ID.json <<'JSON'
+...
+JSON
+git add jobs/$ID.json && git commit -qm "job $ID (ask)"
+git push -q origin HEAD:main || { git fetch -q origin && git rebase -q origin/main && git push -q origin HEAD:main; }
+```
+
+**3. Wait for the result.** Pull every 15 seconds or so until `results/<id>.json` appears —
+the agent polls on a ~20-second interval, so allow a minute of pickup on top of the work
+(an ask is one to four minutes, a refresh several):
+
+```bash
+until git fetch -q origin && git reset --hard -q origin/main && [ -f results/$ID.json ]; do sleep 15; done
+cat results/$ID.json
+```
+
+**4. Read it.** The result carries the answer; there is nothing else to fetch:
+
+```json
+{
+  "id": "20261010T084512Z-a1b2c3d4", "verb": "ask", "ok": true, "exit_code": 0,
+  "answer": "the architect's answer, in full",
+  "detail": {}, "error": null, "hint": null,
+  "started": "...", "finished": "...", "agent": "..."
+}
+```
+
+`ok: false` means it failed: `error` says what happened and `hint` names the corrective
+action, with `exit_code` matching the table at the end of this document. A refusal still
+produces a result — silence is never the answer, so **no result at all** means something
+else: the agent is stopped, or a file named `PAUSED` exists in the repo root, which stops it
+picking up work until deleted.
+
 ### On the machine itself
 
 ```
