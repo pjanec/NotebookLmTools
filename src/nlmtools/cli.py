@@ -604,7 +604,7 @@ def _run_doctor(args: argparse.Namespace) -> Envelope:
             exits.DRIVE_AUTH if drive_broken else exits.NLM_AUTH,
             "; ".join(problems),
             hint=(
-                "run setup.ps1 to reauthorize Google Drive"
+                "run: powershell -f setup.ps1 -ReauthDrive"
                 if drive_broken
                 else "run 'nlm login' on this host, then retry"
             ),

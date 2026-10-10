@@ -823,3 +823,28 @@ retrieval works on chunks that never see the APPROVED header. What belongs in th
 the decision, restated in the design documentation as a description of how the system works.
 That leaves a real debt: the nine approved documents hold decisions that may exist nowhere
 else, and excluding them removes that intent from the corpus until it is written up.
+
+## The documented recovery from a dead Drive token did not recover anything
+
+Came back to the machine after a month. `nlmt doctor` reported `DRIVE_AUTH`:
+`invalid_grant: maybe token expired`. Expected -- the OAuth app stays in Testing, so Google
+expires the refresh token 7 days after it is issued, which `google-oauth-setup.md` has said
+from the start.
+
+What it also said, in four places, was to run `setup.ps1`. That does not work. The script
+checks `rclone listremotes`, finds `nlmtools:` present, prints **"rclone remote 'nlmtools'
+already configured"** and exits 0. The token is never touched. So the one documented
+recovery path reported success and changed nothing -- the worst kind of instruction, because
+it costs a browser round trip before you notice.
+
+Fixed with `setup.ps1 -ReauthDrive`, which takes the existing-remote branch and runs
+`rclone config reconnect nlmtools:` interactively, keeping the client id, scope and
+encryption as they are, then verifies the remote actually reaches Drive before claiming
+success (rclone exits 0 after declining its own prompt, so exit status alone proves
+nothing). All four hints -- `cli.py`, `exits.py`, `drive.py` and the doc -- now name the
+flag, and the plain path prints a note saying the flag exists.
+
+**A second thing this shows: the two logins fail independently.** NotebookLM was fine after
+a month -- the headless re-auth renewed it and `nlmt status` listed all 20 sources ready --
+while Drive was dead. Asking kept working the whole time; only loading broke. That is why
+`doctor` checks both, and why "the system is down" is never the right diagnosis without it.

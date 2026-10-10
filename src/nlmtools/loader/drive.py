@@ -65,7 +65,7 @@ class Drive:
             failure_code=DRIVE_AUTH,
             env=secrets.rclone_env(),
             check=check,
-            failure_hint=hint or "run setup.ps1 to reauthorize Google Drive",
+            failure_hint=hint or "run: powershell -f setup.ps1 -ReauthDrive",
         )
 
     def _path(self, *parts: str) -> str:

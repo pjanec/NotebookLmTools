@@ -31,7 +31,7 @@ TABLE: dict[int, tuple[str, str, str]] = {
     DRIVE_AUTH: (
         "DRIVE_AUTH",
         "rclone cannot authenticate to Google Drive",
-        "re-run setup.ps1 to reauthorize rclone",
+        "run: powershell -f setup.ps1 -ReauthDrive",
     ),
     NLM_AUTH: (
         "NLM_AUTH",

@@ -106,14 +106,20 @@ status. So roughly weekly, a run fails with:
 ```
 FAILED  load  (DRIVE_AUTH, exit 10)
   ...
-  -> run setup.ps1 to reauthorize rclone
+  -> run: powershell -f setup.ps1 -ReauthDrive
 ```
 
 Recovery is one command and a browser click:
 
 ```
-powershell -f setup.ps1
+powershell -f setup.ps1 -ReauthDrive
 ```
+
+⚠ **The flag is required.** A plain `setup.ps1` finds the remote already present, reports
+`rclone remote 'nlmtools' already configured`, and exits 0 without touching the dead token
+— so it looks like a successful repair and changes nothing. `-ReauthDrive` redoes just the
+browser leg, via `rclone config reconnect`, and then proves the remote reaches Drive before
+claiming success.
 
 The client ID and secret stay in Credential Manager, so there is nothing to re-type. The
 failure is clean — it happens before anything in the notebook is touched, so no load is
@@ -138,6 +144,6 @@ recreating — one client serves every machine you use.
 |---|---|
 | `access_denied` at the consent screen | you are not in *Audience → Test users* |
 | "unverified app" warning | expected in Testing; *Advanced → Go to ‹app name›* |
-| `DRIVE_AUTH` after about a week | the 7-day Testing token expiry; re-run `setup.ps1` |
+| `DRIVE_AUTH` after about a week | the 7-day Testing token expiry; run `setup.ps1 -ReauthDrive` |
 | publish button greyed out | expected and irrelevant; see "What to ignore" |
 | `Drive API has not been used in project…` | step 2 was skipped |

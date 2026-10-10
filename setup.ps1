@@ -42,6 +42,12 @@
 .PARAMETER DriveClientSecret
     The matching client secret. Stored alongside the client id.
 
+.PARAMETER ReauthDrive
+    Redo only the Google Drive browser authorization for an existing remote. Use this when
+    Drive calls fail with `invalid_grant`, which happens about a week after each
+    authorization because the OAuth app stays in Testing status. Everything else about the
+    remote -- client id, scope, encryption -- is left alone.
+
 .PARAMETER Force
     Rebuild the virtual environment from scratch.
 
@@ -64,6 +70,7 @@ param(
     [string]$PythonExe,
     [string]$DriveClientId,
     [string]$DriveClientSecret,
+    [switch]$ReauthDrive,
     [switch]$Force
 )
 
@@ -588,8 +595,33 @@ if ($SkipLogins) {
         $listed = Invoke-Native -Exe $RcloneExe -Arguments @('listremotes')
         $remotes = if ($listed.Ok) { $listed.Lines } else { @() }
 
-        if ($remotes -contains "${RemoteName}:") {
+        if (($remotes -contains "${RemoteName}:") -and -not $ReauthDrive) {
             Write-Ok "rclone remote '$RemoteName' already configured"
+            Write-Note 'if Drive calls fail with invalid_grant, the 7-day Testing-mode token'
+            Write-Note 'has expired -- re-run:  .\setup.ps1 -ReauthDrive'
+        } elseif ($remotes -contains "${RemoteName}:") {
+            # The remote exists but its refresh token is dead -- the ordinary state after a
+            # week, because the OAuth app stays in Testing (docs/google-oauth-setup.md).
+            # `config reconnect` redoes just the browser leg and keeps the client id,
+            # scope and everything else already in the config.
+            Write-Host ''
+            Write-Host '    A browser window will open so you can re-authorize rclone against' -ForegroundColor Yellow
+            Write-Host '    your normal Google account. Nothing else about the remote changes.' -ForegroundColor Yellow
+            Write-Host ''
+            $again = Invoke-NativeInteractive -Exe $RcloneExe `
+                         -Arguments @('config', 'reconnect', "${RemoteName}:")
+            if (-not $again.Ok) {
+                Fail 'rclone could not re-authorize the Drive remote' `
+                     "run: tools\rclone.exe config reconnect ${RemoteName}:"
+            }
+            # Exit 0 is not proof: rclone exits 0 after declining its own prompt. Only a
+            # call that actually reaches Drive settles it.
+            $reach = Invoke-Native -Exe $RcloneExe -Arguments @('lsd', "${RemoteName}:", '--max-depth', '1')
+            if (-not $reach.Ok) {
+                Fail "re-authorization did not take: $($reach.Output)" `
+                     "delete the remote with: tools\rclone.exe config delete $RemoteName   then re-run this script"
+            }
+            Write-Ok "re-authorized Drive remote '$RemoteName' and confirmed it reaches Drive"
         } else {
             # Every question rclone would ask must be answered explicitly. `config create`
             # silently takes the default for anything unanswered, and the default for the
