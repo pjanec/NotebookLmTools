@@ -123,7 +123,7 @@ Each stage means something specific, so a failure localises the problem:
 
 | Stage | What a failure means |
 |---|---|
-| credentials | one of the two sign-ins did not take. Re-run `setup.ps1`. |
+| credentials | one of the two sign-ins did not take. For Drive: `setup.ps1 -ReauthDrive`. For NotebookLM: `.venv\Scripts\nlm.exe login`. A plain `setup.ps1` will **not** refresh an existing Drive remote. |
 | fixtures | a local bug, not an environment problem. Should never fail. |
 | drive | Drive upload or checksum verification. Exit 10 is authorization, exit 13 means bytes changed in transit — do not proceed. |
 | load | the pipeline. Exit 13 here means NotebookLM did not ingest the content intact, which is the failure this whole project exists to prevent. |
@@ -156,10 +156,20 @@ full download once.
   means and which ones must never be retried in a loop.
 - `nlmt doctor` re-checks both credentials and reports the signed-in account.
 
-**Sessions last hours, not weeks.** The tool renews them silently in the background with no
-browser window. Exit 11 means even that failed, and a human must run
-`.venv\Scripts\nlm.exe login` — which normally completes by itself, opening and closing
-Chrome without asking anything.
+**The two credentials expire on completely different clocks.** Treat them separately; a
+failure in one says nothing about the other, and `nlmt doctor` names which.
+
+| | Lifetime | Recovery | Needs a human? |
+|---|---|---|---|
+| **NotebookLM session** | hours | renewed silently, no browser window | only if that fails: exit 11, then `.venv\Scripts\nlm.exe login` |
+| **Drive refresh token** | **7 days** — Testing-mode OAuth app | `powershell -f setup.ps1 -ReauthDrive` | yes, a browser sign-in every time |
+
+So `nlmt ask` can work for weeks while `nlmt load` is broken: asking touches NotebookLM
+only. Measured here — the machine came back after a month off with NotebookLM healthy and
+Drive dead.
+
+⚠ **`setup.ps1` without `-ReauthDrive` cannot fix an expired Drive token.** It sees the
+remote, prints `already configured`, and exits 0. That reads as a successful repair.
 
 **Nothing sensitive travels with the repository.** Credential Manager is bound to the
 Windows account on one machine, so the new machine holds its own copy of everything, and

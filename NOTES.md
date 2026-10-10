@@ -848,3 +848,37 @@ flag, and the plain path prints a note saying the flag exists.
 a month -- the headless re-auth renewed it and `nlmt status` listed all 20 sources ready --
 while Drive was dead. Asking kept working the whole time; only loading broke. That is why
 `doctor` checks both, and why "the system is down" is never the right diagnosis without it.
+
+## Documenting the always-on role, and what MCP cannot be
+
+Asked to document the reauth, review the install path, describe per-repository and
+per-notebook configuration, and add a section on running this as a background tool "ready
+for questions from an LLM via MCP".
+
+Three of those were gaps in wording. The fourth turned out to be a design answer.
+
+**MCP cannot serve a remote LLM here, and must not serve a local one for corpus work.**
+Checked against the installed `notebooklm-mcp-cli` rather than assumed:
+
+* Its MCP server runs over **stdio, or HTTP bound to loopback** -- it refuses a non-loopback
+  bind outright and warns it has no authentication. So it can only ever serve a process on
+  the same machine. For a Claude cloud VM the git queue is not a workaround for missing MCP;
+  it is the only shape that can work at all.
+* Its tool surface contradicts this project's one rule in two checkable ways.
+  `source_add(source_type="file")` is precisely the local upload that strips function
+  bodies, and it is the obvious tool for an agent holding a local `.txt`. Worse,
+  `resolve_drive_mime_type()` maps only `doc|slides|sheets|pdf` and **falls back to the
+  Google Doc type for anything else** -- so a plain-text Drive source added through that
+  layer is converted, which is the conversion that failed to import at all in testing. Both
+  failures are silent.
+
+So the new `always-on-service.md` says plainly: for a remote LLM, the queue; for a local
+one, `nlmt` itself, which already has `--ai`, `--help --json` and a hint on every error. A
+safe MCP server would be a thin stdio wrapper over `ask`/`status`/`load`, where the
+dangerous operations are not expressible -- small work, not yet done.
+
+**A separate finding while writing the handoff:** two relays cannot share one ops repo. Job
+identity is the filename and there are no cross-machine leases, so a twin installation
+pointed at `nlm-ops` would execute every job twice. That makes "install it on another
+machine the same way" four different intentions -- move, second independent relay, cold
+spare, or plain workstation -- and the handoff now opens by making the reader choose.

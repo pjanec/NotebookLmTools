@@ -137,6 +137,41 @@ Getting these right matters more than it looks:
 - **`drive_project`** names the folder under `/NotebookLmTools` on Drive. Keep it distinct so
   `nlmt prune` can retire one project's bundles without touching another's.
 
+### 4b. Decide how notebooks are named
+
+The config does not name notebooks; it decides which names are **allowed**. The naming
+itself is a convention you keep, and it is worth keeping deliberately because the name is
+the only thing telling you which snapshot you are talking to.
+
+| Field | What it does |
+|---|---|
+| `notebook_prefix` | the practical guard. Any name starting with it is allowed, so new notebooks need no config change, while a leaked ops token still cannot reach another project's notebook |
+| `allowed_notebooks` | an exact allowlist instead, when you want precisely two or three and no more |
+| `default_notebook` | used only when a job names none and none has been used yet |
+
+Neither prefix nor allowlist is required — leave both unset and any name is accepted, which
+is fine when the account holds one project's notebooks and nothing else.
+
+**A convention that works: `<Project> - <dump generation>`.** The dump tool stamps an
+ordinal into every output (`HROT.Eng_281.01.txt`), and `--overwrite` advances it on each
+run. Naming the notebook after that ordinal — `HROT - 281` — means the name tells you
+exactly which bundle is inside, and a stale answer is traceable to a generation rather than
+a guess. The alternative, naming by subject (`SimHost damage model`), reads better but goes
+quietly out of date: the name survives twenty reloads and tells you nothing about which.
+
+Pick one and set `notebook_prefix` to match (`"HROT - "` or `"SimHost "`). Mixing both
+conventions in one project is the case to avoid, because then the name means nothing
+reliably.
+
+Two consequences worth knowing before you choose:
+
+- **A new notebook per generation accumulates notebooks**, each holding a full copy of the
+  corpus. That is often what you want — an old notebook is a frozen snapshot you can still
+  question, and its chat history stays coherent because its sources never changed.
+- **Reloading one notebook in place** keeps a single name and one chat history, but
+  **breaks the citations in older sessions** that pointed at the replaced sources. Expected,
+  not a bug — but it is the reason a generation-stamped name is easier to reason about.
+
 ### 5. Restart the agent
 
 It reads its configuration at startup, and refuses to start on a bad one rather than

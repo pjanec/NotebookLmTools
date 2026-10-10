@@ -40,6 +40,30 @@ Setup is idempotent, is the only supported install path, and is how you move to 
 machine. It creates its own virtual environment, so nothing depends on what is installed
 system-wide.
 
+### Reauthorizing Google Drive — expect this weekly
+
+The OAuth app stays in Google's **Testing** publishing status, and Google expires a
+Testing-mode refresh token **7 days** after it is issued. So about once a week, a load
+fails with `DRIVE_AUTH` / `invalid_grant`:
+
+```
+powershell -f setup.ps1 -ReauthDrive
+```
+
+⚠ **The flag is not optional.** A plain `setup.ps1` finds the remote already present,
+reports `rclone remote 'nlmtools' already configured` and exits 0 **without touching the
+dead token** — it looks like a repair and changes nothing. `-ReauthDrive` redoes only the
+browser leg, keeps the client id, scope and encryption as they are, and then proves the
+remote reaches Drive before claiming success.
+
+**The two credentials fail independently, and only one of them expires weekly.** The
+NotebookLM session lasts hours and is renewed silently with no browser window; Drive is the
+one that needs a human about once a week. So `nlmt ask` can keep working perfectly while
+`nlmt load` is broken — which is why `nlmt doctor` checks both and names which one failed.
+Publishing the OAuth app to production would end the weekly expiry, but it demands a home
+page and privacy policy URL on a domain you control; for a personal account that price is
+usually too high.
+
 ## Use
 
 ```
@@ -107,6 +131,7 @@ that has never read any documentation can still recover.
 | [`docs/consulting-the-architect.md`](docs/consulting-the-architect.md) | what a consuming project's agent needs: asking, refreshing, and what an answer is worth |
 | [`docs/remote-control.md`](docs/remote-control.md) | driving this machine from a cloud VM: design, trust boundary, setup |
 | [`docs/onboarding-a-project.md`](docs/onboarding-a-project.md) | adding a new project: GitHub, Windows, cloud VM |
+| [`docs/always-on-service.md`](docs/always-on-service.md) | running it as a background service that answers an LLM's questions |
 | [`CLAUDE.md`](CLAUDE.md) | rules for agents working in this repository |
 
 ## Development

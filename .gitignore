@@ -22,6 +22,11 @@ venv/
 # Local output
 answers/
 
+# Machine-specific handoff notes: concrete paths, repo URLs and notebook names for
+# one installation. Not secrets, but not shareable either, and useless to anyone else.
+HANDOFF.local.md
+*.local.md
+
 # rclone: the binary is fetched by setup.ps1; the lock file IS committed so
 # another machine installs the same version.
 rclone.conf
